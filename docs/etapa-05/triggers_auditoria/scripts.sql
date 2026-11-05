@@ -1,5 +1,12 @@
 -- =============================================================
 -- ETAPA V - Tema 3: Triggers y auditoria
+-- La parte 1 crea los triggers y la parte 2 los prueba (A0 a A7).
+-- Los triggers de auditoria guardan en la tabla auditoria la operacion, el
+-- codigo del registro, el valor anterior y el nuevo, y el empleado que
+-- informo la aplicacion (SESSION_CONTEXT 'cod_usuario'; si no lo informo,
+-- el usuario 1). usuario_bd se completa solo con el login de la sesion.
+-- Requiere crear_bd.sql, cargar_datos.sql y el script de procedimientos
+-- (docs/etapa-05/procedimientos_funciones/scripts.sql), que usa A3.
 -- =============================================================
 
 USE smarthome_store;
@@ -9,6 +16,7 @@ SET NOCOUNT ON;
 GO
 -- -------------------------------------------------------------
 -- Trigger 1: producto (precio_lista y stock)
+-- Guarda: 'precio_lista=...; stock=...' antes y despues del cambio.
 -- Un trigger se ejecuta una vez por sentencia: inserted y deleted
 -- pueden tener muchas filas. El FULL OUTER JOIN cubre los tres
 -- casos (INSERT, UPDATE y DELETE).
@@ -49,6 +57,7 @@ GO
 
 -- -------------------------------------------------------------
 -- Trigger 2: pedido (estado, estado_pago y estado_envio)
+-- Guarda: 'estado=...; pago=...; envio=...' antes y despues del cambio.
 -- Solo audita si alguno de esos campos cambia: un UPDATE de la
 -- direccion de envio no genera fila.
 -- -------------------------------------------------------------
@@ -90,6 +99,7 @@ GO
 
 -- -------------------------------------------------------------
 -- Trigger 3: compra (estado)
+-- Guarda: 'estado=...' antes y despues del cambio.
 -- -------------------------------------------------------------
 CREATE OR ALTER TRIGGER dbo.trg_compra_auditoria
 ON dbo.compra
@@ -125,6 +135,7 @@ GO
 
 -- -------------------------------------------------------------
 -- Trigger 4: factura (emision y total)
+-- Guarda: 'tipo=...; numero=...; total=...' antes y despues del cambio.
 -- Una factura no deberia modificarse; si se modifica, se audita
 -- igual, sin filtrar por columna.
 -- -------------------------------------------------------------
@@ -331,6 +342,8 @@ GO
 -- Usuario: 9. El trigger procesa todas las filas de inserted de
 -- una vez: 10 filas de auditoria en una sola sentencia. Es la
 -- prueba de que es set-based y no fila por fila.
+-- Esperado: filas_auditadas = 10; despues de la limpieza, el stock
+-- vuelve a su valor y auditoria_total es 10.
 -- =============================================================
 DECLARE @antes5 INT = (SELECT ISNULL(MAX(cod_auditoria), 0) FROM auditoria);
 

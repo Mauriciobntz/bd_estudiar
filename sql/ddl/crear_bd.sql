@@ -1,9 +1,18 @@
+-- =============================================================
+-- DDL: creación de la base SmartHome Store (equipo 37)
+-- Crea las 22 tablas con sus claves, restricciones y valores por defecto,
+-- los dos índices filtrados de direccion y el trigger de la dirección principal.
+-- Ejecutar primero, en un servidor que todavía no tenga la base smarthome_store.
+-- Después se carga sql/dml/cargar_datos.sql.
+-- Esperado: termina sin errores y la base queda con 22 tablas vacías.
+-- =============================================================
 CREATE DATABASE smarthome_store;
 GO
 USE smarthome_store;
 GO
 SET QUOTED_IDENTIFIER ON; -- lo exigen los indices filtrados de direccion
 GO
+-- Catálogo de provincias (RN.29). El nombre no se repite.
 CREATE TABLE provincia
 (
   cod_provincia INT IDENTITY CONSTRAINT PK_provincia PRIMARY KEY,
@@ -11,6 +20,8 @@ CREATE TABLE provincia
   CONSTRAINT UQ_provincia_nombre UNIQUE (nombre)
 );
 GO
+-- Catálogo de localidades: cada una pertenece a una provincia (RN.29).
+-- Hay nombres repetidos en provincias distintas, por eso la unicidad es nombre + provincia.
 CREATE TABLE localidad
 (
   cod_localidad INT IDENTITY CONSTRAINT PK_localidad PRIMARY KEY,
@@ -20,6 +31,10 @@ CREATE TABLE localidad
   CONSTRAINT FK_localidad_provincia FOREIGN KEY (cod_provincia) REFERENCES provincia(cod_provincia) ON DELETE NO ACTION ON UPDATE CASCADE
 );
 GO
+-- Clientes de la tienda online (RN.01). El email es único y debe tener un formato válido.
+-- La contraseña se guarda como hash y la fecha de alta es la actual (RN.16).
+-- Las direcciones están en la tabla direccion: el cliente puede registrarse sin ellas (RN.29)
+-- y solo necesita una para generar un pedido (RN.01).
 CREATE TABLE cliente
 (
   cod_cliente INT IDENTITY CONSTRAINT PK_cliente PRIMARY KEY,
@@ -35,6 +50,8 @@ CREATE TABLE cliente
   CONSTRAINT CK_cliente_email CHECK (email LIKE '%_@__%.__%')
 );
 GO
+-- Usuarios internos (RN.12): nombre único y rol DEPOSITO, ADMINISTRADOR o SOPORTE,
+-- escrito en mayúsculas (RN.13). estado = 0 da de baja al usuario sin borrarlo.
 CREATE TABLE usuario
 (
   cod_usuario INT IDENTITY CONSTRAINT PK_usuario PRIMARY KEY,
@@ -47,6 +64,8 @@ CREATE TABLE usuario
   CONSTRAINT CK_usuario_estado CHECK(estado IN (0,1))
 );
 GO
+-- Categorías de productos (RN.06). cod_categoria_padre arma la jerarquía
+-- (por ejemplo, Audio dentro de Electrónica); NULL indica una categoría principal.
 CREATE TABLE categoria
 (
   cod_categoria INT IDENTITY CONSTRAINT PK_categoria PRIMARY KEY,
@@ -58,6 +77,8 @@ CREATE TABLE categoria
   CONSTRAINT CK_categoria_estado CHECK(activo IN (0,1))
 );
 GO
+-- Catálogo de alícuotas de IVA (RN.28). El código no es IDENTITY: se usa el que asigna
+-- ARCA a cada alícuota en la factura electrónica (decisión 13 de la Etapa II).
 CREATE TABLE alicuota_iva
 (
   cod_alicuota INT CONSTRAINT PK_alicuota_iva PRIMARY KEY,
@@ -68,6 +89,8 @@ CREATE TABLE alicuota_iva
   CONSTRAINT CK_alicuota_iva_porcentaje CHECK (porcentaje >= 0 AND porcentaje < 100)
 );
 GO
+-- Productos del catálogo (RN.06 y RN.28). precio_lista es el precio neto, sin IVA (RN.19).
+-- El stock nunca queda negativo (RN.09 y RN.11). activo = 0 da de baja el producto sin borrarlo.
 CREATE TABLE producto
 (
   cod_producto INT IDENTITY CONSTRAINT PK_producto PRIMARY KEY,
@@ -85,6 +108,7 @@ CREATE TABLE producto
   CONSTRAINT CK_producto_stock CHECK (stock >= 0)
 );
 GO
+-- Proveedores (RN.07). CUIT y email únicos; el CUIT con el formato NN-NNNNNNNN-N.
 CREATE TABLE proveedor
 (
   cod_proveedor INT IDENTITY CONSTRAINT PK_proveedor PRIMARY KEY,
@@ -100,6 +124,9 @@ CREATE TABLE proveedor
   CONSTRAINT CK_proveedor_estado CHECK(activo IN (0,1))
 );
 GO
+-- Direcciones de clientes y proveedores (RN.04 y RN.29). Cada fila pertenece a un solo
+-- titular: un cliente o un proveedor, nunca a los dos ni a ninguno (CK_direccion_titular).
+-- Si se borra el titular, se borran sus direcciones (ON DELETE CASCADE).
 CREATE TABLE direccion
 (
   cod_direccion INT IDENTITY CONSTRAINT PK_direccion PRIMARY KEY,
@@ -116,6 +143,8 @@ CREATE TABLE direccion
   CONSTRAINT CK_direccion_titular CHECK ((cod_cliente IS NOT NULL AND cod_proveedor IS NULL) OR (cod_cliente IS NULL AND cod_proveedor IS NOT NULL))
 );
 GO
+-- Cada titular tiene como máximo una dirección principal (RN.04 y RN.29).
+-- Son índices filtrados: solo cuentan las filas con principal = 1.
 CREATE UNIQUE INDEX UQ_direccion_principal_cliente ON direccion(cod_cliente) WHERE principal = 1 AND cod_cliente IS NOT NULL;
 GO
 CREATE UNIQUE INDEX UQ_direccion_principal_proveedor ON direccion(cod_proveedor) WHERE principal = 1 AND cod_proveedor IS NOT NULL;
@@ -149,6 +178,7 @@ BEGIN
   INNER JOIN sin_principal s ON s.cod_direccion = x.cod_direccion;
 END;
 GO
+-- Métodos de pago aceptados (RN.05); el nombre no se repite.
 CREATE TABLE metodo_pago
 (
   cod_metodo_pago INT IDENTITY CONSTRAINT PK_metodo_pago PRIMARY KEY,
@@ -156,6 +186,12 @@ CREATE TABLE metodo_pago
   CONSTRAINT UQ_metodo_pago_nombre UNIQUE (nombre)
 );
 GO
+-- Pedidos de venta (RN.02, RN.05 y RN.16). El total no se guarda: se calcula desde el detalle (RN.10).
+-- La dirección de entrega se copia como texto, para que no cambie si después el cliente
+-- modifica la suya (RN.04 y RN.29).
+-- Un pago aprobado exige la referencia de la transacción (CK_pedido_ref_transaccion).
+-- Los datos de envío se completan después del pago (RN.15), y cod_usuario es el empleado
+-- de depósito que despachó el pedido (RN.22); por eso aceptan NULL.
 CREATE TABLE pedido
 (
   cod_pedido INT IDENTITY CONSTRAINT PK_pedido PRIMARY KEY,
@@ -187,6 +223,8 @@ CREATE TABLE pedido
   
 );
 GO
+-- Compras a proveedores (RN.07 y RN.20). Nacen pendientes y suben el stock recién al
+-- confirmarse (recibida). cod_usuario es el empleado de depósito que la registró (RN.13).
 CREATE TABLE compra
 (
   cod_compra INT IDENTITY CONSTRAINT PK_compra PRIMARY KEY,
@@ -201,6 +239,9 @@ CREATE TABLE compra
   CONSTRAINT CK_compra_fecha CHECK (fecha <= GETDATE())
 );
 GO
+-- Registro de cambios sobre datos sensibles (RN.14), que completan los triggers de la Etapa V.
+-- cod_usuario es el empleado que informa la aplicación, y usuario_bd, el login de
+-- SQL Server que ejecutó la operación (se completa solo).
 CREATE TABLE auditoria
 (
   cod_auditoria INT IDENTITY CONSTRAINT PK_auditoria PRIMARY KEY,
@@ -216,6 +257,9 @@ CREATE TABLE auditoria
   CONSTRAINT CK_auditoria_operacion CHECK (operacion IN ('INSERT', 'UPDATE', 'DELETE'))
 );
 GO
+-- Comprobante de venta (RN.17 y RN.21): una sola factura por pedido (UQ_factura_pedido)
+-- y número único por punto de venta. La condición de IVA y el documento del cliente se
+-- guardan en la factura y no en el cliente (RN.18). cod_usuario es quien la emitió.
 CREATE TABLE factura
 (
   cod_factura INT IDENTITY CONSTRAINT PK_factura PRIMARY KEY,
@@ -242,6 +286,9 @@ CREATE TABLE factura
   CONSTRAINT UQ_factura_pedido UNIQUE (cod_pedido)
 );
 GO
+-- Renglones del pedido. Precio, alícuota e IVA se copian al vender y no cambian después
+-- (RN.03, RN.19 y RN.28). Un producto aparece una sola vez por pedido (clave compuesta).
+-- Si se borra el pedido, se borran sus renglones.
 CREATE TABLE detalle_pedido
 (
   item INT NOT NULL,
@@ -258,6 +305,7 @@ CREATE TABLE detalle_pedido
   CONSTRAINT CK_detalle_pedido_precio CHECK (precio_unitario_venta > 0)
 );
 GO
+-- Renglones de la compra, con el costo unitario de ese momento (RN.08).
 CREATE TABLE detalle_compra
 (
   costo_unitario DECIMAL(10,2) NOT NULL,
@@ -271,6 +319,8 @@ CREATE TABLE detalle_compra
   CONSTRAINT CK_detalle_compra_costo CHECK (costo_unitario > 0)
 );
 GO
+-- Promociones (RN.23). La fecha de fin no es anterior a la de inicio, y deben dar al menos
+-- un beneficio: descuento de hasta 75 % o cuotas sin interés (de 2 a 36).
 CREATE TABLE promocion (
     cod_promocion        INT IDENTITY(1,1) NOT NULL,
     nombre               VARCHAR(100)      NOT NULL,
@@ -290,6 +340,7 @@ CREATE TABLE promocion (
         CHECK (porcentaje_descuento > 0 OR nro_cuotas > 1)
 );
 GO
+-- Productos de cada promoción (RN.24): relación de muchos a muchos.
 CREATE TABLE promocion_producto (
     cod_promocion INT NOT NULL,
     cod_producto  INT NOT NULL,
@@ -302,6 +353,7 @@ CREATE TABLE promocion_producto (
         ON DELETE CASCADE ON UPDATE CASCADE
 );
 GO
+-- Banners de una promoción (RN.25), con una URL https única.
 CREATE TABLE slide (
     cod_slide     INT IDENTITY(1,1) NOT NULL,
     url           VARCHAR(500)      NOT NULL,
@@ -314,6 +366,7 @@ CREATE TABLE slide (
         ON DELETE CASCADE ON UPDATE CASCADE
 );
 GO
+-- Imágenes y videos de un producto (RN.26), con una URL https única.
 CREATE TABLE multimedia (
     cod_multimedia INT IDENTITY(1,1) NOT NULL,
     url            VARCHAR(500)      NOT NULL,
@@ -328,6 +381,7 @@ CREATE TABLE multimedia (
         ON DELETE CASCADE ON UPDATE CASCADE
 );
 GO
+-- Catálogo de especificaciones técnicas (RN.27), con nombre único.
 CREATE TABLE especificacion (
     cod_especificacion INT IDENTITY(1,1) NOT NULL,
     nombre             VARCHAR(100)      NOT NULL,
@@ -335,6 +389,7 @@ CREATE TABLE especificacion (
     CONSTRAINT UQ_especificacion_nombre UNIQUE (nombre)
 );
 GO
+-- Valor de cada especificación para un producto (RN.27); no puede quedar vacío.
 CREATE TABLE especificacion_producto (
     cod_producto       INT          NOT NULL,
     cod_especificacion INT          NOT NULL,

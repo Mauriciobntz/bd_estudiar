@@ -4,6 +4,8 @@
 -- Los códigos se cargan explícitos (IDENTITY_INSERT) para que las FK
 -- sean predecibles. Guardado en UTF-8 con BOM (acentos).
 -- Excepción: alicuota_iva tiene 6 registros, que son todas las
+-- Esperado: termina sin errores y la consulta final muestra la cantidad
+-- de filas de cada una de las 22 tablas (el detalle está al final).
 -- alícuotas vigentes en Argentina.
 -- =============================================================
 USE smarthome_store;
@@ -11,6 +13,7 @@ GO
 SET QUOTED_IDENTIFIER ON; -- lo exigen los indices filtrados de direccion
 GO
 
+-- 24 provincias: las 23 provincias y la Ciudad Autónoma de Buenos Aires.
 SET IDENTITY_INSERT provincia ON;
 INSERT INTO provincia (cod_provincia, nombre) VALUES
 (1, 'BUENOS AIRES'),
@@ -40,6 +43,7 @@ INSERT INTO provincia (cod_provincia, nombre) VALUES
 SET IDENTITY_INSERT provincia OFF;
 GO
 
+-- 11 localidades, las de los clientes y proveedores.
 SET IDENTITY_INSERT localidad ON;
 INSERT INTO localidad (cod_localidad, nombre, cod_provincia) VALUES
 (1, 'Corrientes', 7),
@@ -56,6 +60,7 @@ INSERT INTO localidad (cod_localidad, nombre, cod_provincia) VALUES
 SET IDENTITY_INSERT localidad OFF;
 GO
 
+-- 10 clientes. Las contraseñas son hashes de prueba.
 SET IDENTITY_INSERT cliente ON;
 INSERT INTO cliente (cod_cliente, nombre, apellido, email, contrasena_hash, fecha_registro, telefono) VALUES
 (1, 'Lucía', 'Gómez', 'lucia.gomez@gmail.com', '$2b$12$luciagomezluciagomezluhashDePrueba0000000000000', '2026-03-10', '3794123456'),
@@ -71,6 +76,8 @@ INSERT INTO cliente (cod_cliente, nombre, apellido, email, contrasena_hash, fech
 SET IDENTITY_INSERT cliente OFF;
 GO
 
+-- 10 usuarios internos: 3 administradores, 4 de depósito y 3 de soporte.
+-- Los triggers de auditoría usan al usuario 1 (mgonzalez) si la aplicación no informa otro.
 SET IDENTITY_INSERT usuario ON;
 INSERT INTO usuario (cod_usuario, nombre_usuario, contrasena_hash, rol) VALUES
 (1, 'mgonzalez', '$2b$12$mgonzalezmgonzalezmgonhashDePrueba0000000000000', 'ADMINISTRADOR'),
@@ -86,6 +93,7 @@ INSERT INTO usuario (cod_usuario, nombre_usuario, contrasena_hash, rol) VALUES
 SET IDENTITY_INSERT usuario OFF;
 GO
 
+-- 5 categorías principales (sin categoría padre).
 SET IDENTITY_INSERT categoria ON;
 INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
 (1, 'Electrónica', NULL),
@@ -96,6 +104,7 @@ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
 SET IDENTITY_INSERT categoria OFF;
 GO
 
+-- 5 subcategorías. Se cargan después porque referencian a su categoría padre.
 SET IDENTITY_INSERT categoria ON;
 INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
 (6, 'Televisores', 1),
@@ -106,6 +115,7 @@ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
 SET IDENTITY_INSERT categoria OFF;
 GO
 
+-- 6 alícuotas de IVA, con el código que les asigna ARCA (ver la excepción del encabezado).
 INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
 (3, 'Cero', 0.00),
 (9, 'Mínima', 2.50),
@@ -115,6 +125,7 @@ INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
 (6, 'Incrementada', 27.00);
 GO
 
+-- 10 productos con precio neto (sin IVA) y stock inicial.
 SET IDENTITY_INSERT producto ON;
 INSERT INTO producto (cod_producto, nombre, descripcion, precio_lista, cod_alicuota, stock, cod_categoria) VALUES
 (1, 'Smart TV 50"', 'Televisor LED 4K UHD de 50 pulgadas con sistema Smart, WiFi y Bluetooth.', 289256.20, 5, 12, 6),
@@ -130,6 +141,7 @@ INSERT INTO producto (cod_producto, nombre, descripcion, precio_lista, cod_alicu
 SET IDENTITY_INSERT producto OFF;
 GO
 
+-- 10 proveedores.
 SET IDENTITY_INSERT proveedor ON;
 INSERT INTO proveedor (cod_proveedor, razon_social, nombre, email, cuit) VALUES
 (1, 'Distribuidora Litoral S.A.', 'Distribuidora Litoral', 'ventas@distribuidoralitoral.example', '30-71234567-8'),
@@ -145,6 +157,8 @@ INSERT INTO proveedor (cod_proveedor, razon_social, nombre, email, cuit) VALUES
 SET IDENTITY_INSERT proveedor OFF;
 GO
 
+-- 22 direcciones: una principal por cliente (1 a 10) y por proveedor (11 a 20), y dos
+-- secundarias, la 21 del cliente 1 y la 22 del proveedor 3.
 SET IDENTITY_INSERT direccion ON;
 INSERT INTO direccion (cod_direccion, calle, numero, cod_postal, principal, cod_localidad, cod_cliente, cod_proveedor) VALUES
 (1, 'Junín', '1234', '3400', 1, 1, 1, NULL),
@@ -172,6 +186,7 @@ INSERT INTO direccion (cod_direccion, calle, numero, cod_postal, principal, cod_
 SET IDENTITY_INSERT direccion OFF;
 GO
 
+-- 10 métodos de pago.
 SET IDENTITY_INSERT metodo_pago ON;
 INSERT INTO metodo_pago (cod_metodo_pago, nombre) VALUES
 (1, 'Tarjeta de crédito'),
@@ -187,6 +202,9 @@ INSERT INTO metodo_pago (cod_metodo_pago, nombre) VALUES
 SET IDENTITY_INSERT metodo_pago OFF;
 GO
 
+-- 12 pedidos en distintos estados, para las pruebas: 10 confirmados y pagados
+-- (7 entregados, el 8 despachado, y el 9 y el 12 sin despachar), el 10 pendiente
+-- y el 11 cancelado. La dirección de entrega es una copia de la del cliente.
 SET IDENTITY_INSERT pedido ON;
 INSERT INTO pedido (cod_pedido, fecha_pedido, estado, estado_pago, ref_transaccion, calle, numero, ciudad, provincia, cod_postal, estado_envio, fecha_envio, transportista, fecha_entrega, nro_seguimiento, cod_cliente, cod_metodo_pago, cod_usuario) VALUES
 (1, '2026-05-12T10:15:00', 'confirmado', 'aprobado', 'MP-88120451', 'Junín', '1234', 'Corrientes', 'CORRIENTES', '3400', 'entregado', '2026-05-13T09:00:00', 'Andreani', '2026-05-16', 'AND-000451201', 1, 3, 3),
@@ -204,6 +222,8 @@ INSERT INTO pedido (cod_pedido, fecha_pedido, estado, estado_pago, ref_transacci
 SET IDENTITY_INSERT pedido OFF;
 GO
 
+-- 10 compras: 8 recibidas, la 9 pendiente (la usan las pruebas de usp_confirmar_compra
+-- en la Etapa V) y la 10 cancelada.
 SET IDENTITY_INSERT compra ON;
 INSERT INTO compra (cod_compra, fecha, estado, nro_comprobante_prov, cod_proveedor, cod_usuario) VALUES
 (1, '2026-03-02T09:00:00', 'recibida', '0001-00012345', 3, 3),
@@ -219,6 +239,8 @@ INSERT INTO compra (cod_compra, fecha, estado, nro_comprobante_prov, cod_proveed
 SET IDENTITY_INSERT compra OFF;
 GO
 
+-- 10 registros de auditoría de ejemplo. usuario_bd no se indica: toma el login
+-- de quien ejecuta este script.
 SET IDENTITY_INSERT auditoria ON;
 INSERT INTO auditoria (cod_auditoria, entidad, operacion, registro_id, fecha, valor_anterior, valor_nuevo, cod_usuario) VALUES
 (1, 'producto', 'UPDATE', 1, '2026-04-05T10:00:00', 'precio_lista=275000.00', 'precio_lista=289256.20', 1),
@@ -234,6 +256,7 @@ INSERT INTO auditoria (cod_auditoria, entidad, operacion, registro_id, fecha, va
 SET IDENTITY_INSERT auditoria OFF;
 GO
 
+-- 10 facturas, una por cada pedido confirmado y pagado (RN.17): pedidos 1 a 9 y 12.
 SET IDENTITY_INSERT factura ON;
 INSERT INTO factura (cod_factura, tipo_comprobante, numero, fecha_emision, cond_iva_cliente, subtotal, iva_total, total, cae, fecha_vto_cae, tipo_documento_cliente, nro_documento_cliente, razon_social, punto_venta, cod_pedido, cod_usuario) VALUES
 (1, 'B', 1, '2026-05-12', 'Consumidor Final', 202479.34, 42520.66, 245000.00, '75432100000013', '2026-05-22', 'DNI', '38456123', NULL, 1, 1, 1),
@@ -249,6 +272,7 @@ INSERT INTO factura (cod_factura, tipo_comprobante, numero, fecha_emision, cond_
 SET IDENTITY_INSERT factura OFF;
 GO
 
+-- 17 renglones de compra, con el costo unitario de cada una (RN.08).
 INSERT INTO detalle_compra (cod_compra, cod_producto, cantidad, costo_unitario) VALUES
 (1, 1, 10, 210000.00),
 (1, 6, 15, 300000.00),
@@ -269,6 +293,8 @@ INSERT INTO detalle_compra (cod_compra, cod_producto, cantidad, costo_unitario) 
 (10, 8, 3, 385000.00);
 GO
 
+-- 18 renglones de pedido. El precio ya incluye el IVA y el descuento de la promoción
+-- vigente: es el precio que quedó congelado al vender (RN.03 y RN.19).
 INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_unitario_venta, alicuota_iva, iva_monto) VALUES
 (1, 1, 1, 1, 245000.00, 21.00, 42520.66),  -- descuento 30.00 % por promoción
 (2, 2, 1, 2, 21250.00, 21.00, 7376.03),  -- descuento 15.00 % por promoción
@@ -290,6 +316,7 @@ INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_uni
 (12, 4, 2, 1, 5200.00, 21.00, 902.48);  -- descuento 35.00 % por promoción
 GO
 
+-- 10 promociones.
 SET IDENTITY_INSERT promocion ON;
 INSERT INTO promocion (cod_promocion, nombre, descripcion, fecha_inicio, fecha_fin, porcentaje_descuento, nro_cuotas) VALUES
 (1, 'Hot Sale 2026', 'Descuentos exclusivos en tecnología durante el Hot Sale.', '2026-05-11T00:00:00', '2026-05-13T23:59:59', 30.00, 1),
@@ -305,6 +332,7 @@ INSERT INTO promocion (cod_promocion, nombre, descripcion, fecha_inicio, fecha_f
 SET IDENTITY_INSERT promocion OFF;
 GO
 
+-- 16 asignaciones de productos a promociones.
 INSERT INTO promocion_producto (cod_promocion, cod_producto) VALUES
 (1, 1),
 (1, 6),
@@ -324,6 +352,7 @@ INSERT INTO promocion_producto (cod_promocion, cod_producto) VALUES
 (10, 7);
 GO
 
+-- 10 slides (banners).
 SET IDENTITY_INSERT slide ON;
 INSERT INTO slide (cod_slide, url, cod_promocion) VALUES
 (1, 'https://cdn.smarthomestore.com.ar/slides/hot-sale-2026.webp', 1),
@@ -339,6 +368,7 @@ INSERT INTO slide (cod_slide, url, cod_promocion) VALUES
 SET IDENTITY_INSERT slide OFF;
 GO
 
+-- 12 archivos multimedia (imágenes y videos).
 SET IDENTITY_INSERT multimedia ON;
 INSERT INTO multimedia (cod_multimedia, url, tipo, cod_producto) VALUES
 (1, 'https://cdn.smarthomestore.com.ar/productos/1/frente.jpg', 'imagen', 1),
@@ -356,6 +386,7 @@ INSERT INTO multimedia (cod_multimedia, url, tipo, cod_producto) VALUES
 SET IDENTITY_INSERT multimedia OFF;
 GO
 
+-- 10 especificaciones técnicas.
 SET IDENTITY_INSERT especificacion ON;
 INSERT INTO especificacion (cod_especificacion, nombre) VALUES
 (1, 'Tamaño de pantalla'),
@@ -371,6 +402,7 @@ INSERT INTO especificacion (cod_especificacion, nombre) VALUES
 SET IDENTITY_INSERT especificacion OFF;
 GO
 
+-- 16 valores de especificaciones de productos.
 INSERT INTO especificacion_producto (cod_producto, cod_especificacion, valor) VALUES
 (1, 1, '50 pulgadas'),
 (1, 2, '4K UHD (3840 x 2160)'),
@@ -390,6 +422,12 @@ INSERT INTO especificacion_producto (cod_producto, cod_especificacion, valor) VA
 (10, 9, '12 meses');
 GO
 
+-- Control: cantidad de filas por tabla.
+-- Esperado: provincia 24, localidad 11, direccion 22, alicuota_iva 6, categoria 10,
+-- usuario 10, cliente 10, proveedor 10, metodo_pago 10, producto 10, compra 10,
+-- detalle_compra 17, pedido 12, detalle_pedido 18, factura 10, auditoria 10,
+-- promocion 10, promocion_producto 16, slide 10, multimedia 12, especificacion 10
+-- y especificacion_producto 16.
 SELECT 'provincia' AS tabla, COUNT(*) AS registros FROM provincia
 UNION ALL SELECT 'localidad', COUNT(*) FROM localidad
 UNION ALL SELECT 'direccion', COUNT(*) FROM direccion
