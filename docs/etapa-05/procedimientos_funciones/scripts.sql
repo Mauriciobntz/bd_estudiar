@@ -8,12 +8,35 @@
 --   sp_registrar_venta_completa  registra pedido + detalle + baja de stock en una sola operacion
 -- =============================================================
 
+-- =============================================================
+-- GUIA DE ESTUDIO PARA LA DEFENSA (rama estudio-defensa, no se sube)
+-- Las lineas "-- >" son notas de estudio.
+-- > FUNCION vs PROCEDIMIENTO:
+-- >   Funcion: devuelve un valor (escalar) o una tabla, se usa DENTRO de una
+-- >     consulta (SELECT dbo.fn_x(...)) y NO puede modificar datos (ni INSERT,
+-- >     ni UPDATE, ni transacciones). Siempre se llama con el esquema: dbo.fn_x.
+-- >   Procedimiento: se ejecuta con EXEC, puede modificar datos, manejar
+-- >     transacciones y errores, y devolver valores con parametros OUTPUT.
+-- > Para que sirven: la regla de negocio queda en UN lugar (por ejemplo, como se
+-- >   calcula el precio final) y la aplicacion no necesita permisos sobre las
+-- >   tablas, solo sobre el procedimiento (ver el tema de seguridad).
+-- > CREATE OR ALTER: crea el objeto o lo reemplaza si ya existe, asi el script
+-- >   se puede ejecutar varias veces. CREATE FUNCTION/PROCEDURE tiene que ser la
+-- >   primera sentencia del lote: por eso hay un GO antes de cada uno.
+-- =============================================================
 USE smarthome_store;
 GO
 
 -- -------------------------------------------------------------
 -- Tipo tabla: lista de productos y cantidades de una venta
 -- -------------------------------------------------------------
+-- > TIPO TABLA: define la "forma" de una tabla para usarla como parametro. Asi
+-- >   una venta recibe todos sus productos en una sola llamada, en vez de llamar
+-- >   una vez por producto.
+-- >   PRIMARY KEY (cod_producto): un producto no se repite dentro de la venta.
+-- >   CHECK (cantidad > 0): no se puede vender 0 ni una cantidad negativa.
+-- > IF TYPE_ID(...) IS NULL: lo crea solo si no existe. No hay CREATE OR ALTER
+-- >   TYPE, y un tipo que ya usa un procedimiento no se puede borrar.
 IF TYPE_ID('dbo.tipo_items_pedido') IS NULL
     CREATE TYPE dbo.tipo_items_pedido AS TABLE
     (
@@ -29,6 +52,15 @@ GO
 -- ofrecen cuotas (porcentaje 0) no cuentan como descuento.
 -- Devuelve 0 si no hay promocion con descuento.
 -- -------------------------------------------------------------
+-- > fn_descuento_vigente(producto, fecha) -> DECIMAL(5,2), por ejemplo 35.00
+-- >   1. Junta las promociones del producto (promocion_producto) cuyo periodo
+-- >      incluye la fecha (BETWEEN incluye los dos extremos).
+-- >   2. MAX(porcentaje_descuento): si hay varias vigentes, la de MAYOR descuento
+-- >      (RN.24). Una promocion que solo da cuotas tiene 0 y no gana.
+-- >   3. ISNULL(x, 0): si no hay ninguna promocion, MAX devuelve NULL y la
+-- >      funcion devuelve 0. Asi el precio final no queda NULL.
+-- > Es una funcion ESCALAR: devuelve un solo valor.
+-- > Ejemplo: Funda Notebook (producto 4) el 20/09/2026 -> 35.00.
 CREATE OR ALTER FUNCTION dbo.fn_descuento_vigente
 (
     @cod_producto INT,
@@ -53,6 +85,15 @@ GO
 -- y despues se aplica el descuento vigente.
 -- Devuelve NULL si el producto no existe.
 -- -------------------------------------------------------------
+-- > fn_precio_final(producto, fecha) -> DECIMAL(10,2): el precio que paga el cliente.
+-- >   precio_lista (neto, RN.19) * (1 + IVA / 100) * (1 - descuento / 100)
+-- >   Primero se suma el IVA y despues se aplica el descuento. ROUND(..., 2) deja
+-- >   2 decimales, como un importe.
+-- >   Llama a otra funcion (fn_descuento_vigente): las funciones se pueden anidar.
+-- >   SELECT @precio = ...: asigna el resultado de la consulta a la variable. Si el
+-- >   producto no existe, no hay fila, la variable queda NULL y devuelve NULL.
+-- > Ejemplo: Funda Notebook el 20/09/2026: 6611.57 * 1,21 * 0,65 = 5200.00.
+-- >   Sin promocion seria 6611.57 * 1,21 = 8000.00.
 CREATE OR ALTER FUNCTION dbo.fn_precio_final
 (
     @cod_producto INT,
@@ -81,6 +122,12 @@ GO
 -- El total no se guarda, se calcula desde el detalle (RN.10).
 -- Devuelve 0 si el pedido no existe o no tiene renglones.
 -- -------------------------------------------------------------
+-- > fn_total_pedido(pedido) -> DECIMAL(12,2): el total de un pedido (RN.10).
+-- >   SUM(cantidad * precio_unitario_venta) de sus renglones. Usa el precio
+-- >   CONGELADO del detalle, no el precio actual del producto: el total de una
+-- >   venta vieja no cambia aunque cambie el catalogo.
+-- >   ISNULL(..., 0): un pedido inexistente o sin renglones da 0 y no NULL.
+-- > Ejemplo: pedido 1 -> 245000.00.
 CREATE OR ALTER FUNCTION dbo.fn_total_pedido
 (
     @cod_pedido INT
@@ -116,6 +163,17 @@ GO
 --   50006 falta la referencia de la transaccion de pago
 --   50007 la direccion no existe o no es del cliente
 -- -------------------------------------------------------------
+-- > sp_registrar_venta_completa: registra una venta entera como UNA operacion.
+-- > Parametros:
+-- >   @items dbo.tipo_items_pedido READONLY: la lista de productos. Los
+-- >     parametros de tipo tabla tienen que ser READONLY.
+-- >   @cod_pedido INT OUTPUT: parametro de SALIDA; el procedimiento devuelve ahi
+-- >     el codigo del pedido creado.
+-- >   @cod_direccion INT = NULL: parametro OPCIONAL; si no se pasa, vale NULL y se
+-- >     usa la direccion principal.
+-- > Por que una transaccion: pedido, detalle y stock se cambian juntos o no se
+-- >   cambia nada. Si fallara entre el pedido y el detalle, quedaria un pedido sin
+-- >   renglones; si fallara despues del detalle, se venderia sin bajar el stock.
 CREATE OR ALTER PROCEDURE dbo.sp_registrar_venta_completa
     @cod_cliente     INT,
     @cod_metodo_pago INT,
@@ -125,13 +183,28 @@ CREATE OR ALTER PROCEDURE dbo.sp_registrar_venta_completa
     @cod_direccion   INT = NULL
 AS
 BEGIN
+-- > SET NOCOUNT ON: no envia los mensajes "(n rows affected)".
+-- > SET XACT_ABORT ON: ante CUALQUIER error, SQL Server aborta y revierte toda la
+-- >   transaccion. Sin esto, algunos errores (por ejemplo, una FK violada) solo
+-- >   cancelan la sentencia y la transaccion sigue abierta con cambios a medias.
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
     -- Si quien llama ya abrio una transaccion, no abrimos otra.
+-- > @@TRANCOUNT: cantidad de transacciones abiertas en la sesion.
+-- >   Si es 0, el procedimiento abre y cierra la suya (@tran_propia = 1).
+-- >   Si ya hay una abierta (otro procedimiento lo llamo dentro de su
+-- >   transaccion), trabaja dentro de esa y deja que quien lo llamo decida el
+-- >   COMMIT o el ROLLBACK.
+-- > GETDATE() se guarda una sola vez en @ahora: todos los precios se calculan con
+-- >   el mismo instante.
     DECLARE @tran_propia BIT = CASE WHEN @@TRANCOUNT = 0 THEN 1 ELSE 0 END;
     DECLARE @ahora DATETIME = GETDATE();
 
+-- > BEGIN TRY ... END TRY / BEGIN CATCH ... END CATCH: si una sentencia del TRY
+-- >   falla (o se lanza un THROW), la ejecucion salta al CATCH.
+-- > THROW numero, 'mensaje', estado: lanza un error propio. Los numeros de usuario
+-- >   tienen que ser 50000 o mayores; por eso los codigos van de 50001 a 50007.
     BEGIN TRY
         IF @tran_propia = 1 BEGIN TRANSACTION;
 
@@ -140,6 +213,9 @@ BEGIN
             THROW 50001, 'Cliente inexistente o inactivo.', 1;
 
         -- Si no se indica una direccion, se usa la principal (RN.04)
+-- > SELECT @variable = columna ... WHERE ...: asigna a la variable el valor de la
+-- >   fila encontrada. Si no hay fila, la variable conserva su valor (NULL), y la
+-- >   validacion siguiente lanza el 50007.
         IF @cod_direccion IS NULL
             SELECT @cod_direccion = cod_direccion
             FROM dbo.direccion
@@ -158,6 +234,8 @@ BEGIN
         IF NOT EXISTS (SELECT 1 FROM @items)
             THROW 50003, 'La venta no tiene productos.', 1;
 
+-- > Producto inexistente: LEFT JOIN de la lista contra producto. Si el producto
+-- >   no existe, las columnas de p quedan NULL (p.cod_producto IS NULL).
         IF EXISTS (SELECT 1
                    FROM @items i
                    LEFT JOIN dbo.producto p ON p.cod_producto = i.cod_producto
@@ -165,6 +243,16 @@ BEGIN
             THROW 50004, 'Producto inexistente o inactivo.', 1;
 
         -- 2. Stock: nadie mas modifica esas filas hasta terminar
+-- > WITH (UPDLOCK, HOLDLOCK): "pistas de bloqueo" sobre las filas leidas.
+-- >   UPDLOCK: toma un bloqueo de actualizacion, asi otra transaccion no puede
+-- >     tomar el mismo bloqueo para modificar esas filas.
+-- >   HOLDLOCK: mantiene el bloqueo hasta el final de la transaccion, no solo
+-- >     durante la lectura.
+-- >   Resultado: si dos clientes compran la ultima unidad al mismo tiempo, el
+-- >   segundo espera a que termine el primero, y despues ve el stock ya
+-- >   descontado. Sin esto, los dos podrian pasar el control y el stock quedaria
+-- >   negativo (en este caso lo frenaria el CHECK stock >= 0, pero con un error).
+-- >   Es el aislamiento de ACID. No se probo con dos sesiones simultaneas.
         IF EXISTS (SELECT 1
                    FROM @items i
                    INNER JOIN dbo.producto p WITH (UPDLOCK, HOLDLOCK)
@@ -173,6 +261,10 @@ BEGIN
             THROW 50005, 'Stock insuficiente para al menos un producto de la venta.', 1;
 
         -- 3. Encabezado del pedido
+-- > INSERT ... SELECT: inserta el resultado de una consulta (no VALUES). La
+-- >   direccion se COPIA como texto en el pedido (RN.04 y RN.29): calle, numero,
+-- >   ciudad (nombre de la localidad) y provincia. fecha_pedido no se indica:
+-- >   toma el DEFAULT GETDATE() (RN.16).
         INSERT INTO dbo.pedido
             (estado, estado_pago, ref_transaccion,
              calle, numero, ciudad, provincia, cod_postal,
@@ -186,12 +278,26 @@ BEGIN
         INNER JOIN dbo.provincia prov ON prov.cod_provincia = loc.cod_provincia
         WHERE c.cod_cliente = @cod_cliente;
 
+-- > SCOPE_IDENTITY(): el ultimo valor IDENTITY generado en ESTE alcance, o sea,
+-- >   el codigo del pedido recien insertado.
+-- >   Por que no @@IDENTITY: @@IDENTITY devuelve el ultimo de la sesion, incluido
+-- >   el que genere un trigger. El trigger de auditoria de pedido inserta una fila
+-- >   en auditoria, asi que @@IDENTITY devolveria el codigo de la AUDITORIA y no
+-- >   el del pedido.
         SET @cod_pedido = SCOPE_IDENTITY();
 
         -- 4. Detalle con precio, alicuota e IVA congelados
         INSERT INTO dbo.detalle_pedido
             (cod_pedido, cod_producto, item, cantidad,
              precio_unitario_venta, alicuota_iva, iva_monto)
+-- > Detalle de la venta, un renglon por producto de @items:
+-- >   ROW_NUMBER() OVER (ORDER BY i.cod_producto): numera los renglones 1, 2, 3...
+-- >     Es una funcion de ventana.
+-- >   pf.precio: el precio final de hoy (con IVA y descuento), que queda CONGELADO
+-- >     (RN.03): si manana cambia el precio de lista, este renglon no cambia.
+-- >   a.porcentaje: la alicuota, tambien copiada (RN.28).
+-- >   iva_monto = total - total / (1 + alicuota / 100): el IVA CONTENIDO en un
+-- >     precio que ya lo incluye. Ejemplo: 850000 - 850000 / 1,105 = 80769.23.
         SELECT @cod_pedido,
                i.cod_producto,
                ROW_NUMBER() OVER (ORDER BY i.cod_producto),
@@ -203,9 +309,14 @@ BEGIN
         FROM @items i
         INNER JOIN dbo.producto    p ON p.cod_producto = i.cod_producto
         INNER JOIN dbo.alicuota_iva a ON a.cod_alicuota = p.cod_alicuota
+-- > CROSS APPLY (SELECT funcion(...) AS precio) pf: ejecuta la funcion una vez por
+-- >   fila y le pone nombre al resultado (pf.precio), para usarlo en dos columnas
+-- >   sin llamar dos veces a la funcion.
         CROSS APPLY (SELECT dbo.fn_precio_final(p.cod_producto, @ahora) AS precio) pf;
 
         -- 5. Salida de stock
+-- > UPDATE con FROM y JOIN: baja el stock de todos los productos de la venta en
+-- >   una sola sentencia (por conjuntos, no con un bucle).
         UPDATE p
         SET p.stock = p.stock - i.cantidad
         FROM dbo.producto p
@@ -213,6 +324,9 @@ BEGIN
 
         IF @tran_propia = 1 COMMIT TRANSACTION;
     END TRY
+-- > CATCH: si la transaccion es propia y sigue abierta, la revierte.
+-- > THROW; (sin argumentos): vuelve a lanzar el MISMO error al que llamo, con su
+-- >   numero y mensaje originales. Asi el error no se "traga" en silencio.
     BEGIN CATCH
         IF @tran_propia = 1 AND @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
         THROW;
@@ -240,6 +354,8 @@ GO
 -- Esperado: producto 4 (Funda Notebook) -> descuento 35.00 y precio_final 5200.00.
 --           Resto -> descuento 0.00 y precio_final = precio_lista + IVA
 --           (por ejemplo producto 1 -> 350000.00; producto 5 -> 850000.00 con IVA 10,5 %).
+-- > Como se usa una funcion escalar: dbo.fn_x(...) en el SELECT, una vez por fila.
+-- >   Si se le pasa una columna (cod_producto), se calcula para cada producto.
 SELECT
     cod_producto,
     nombre,
@@ -260,6 +376,8 @@ GO
 -- A3. Control: la funcion reproduce el precio congelado en los pedidos existentes.
 --     Lista solo los renglones donde el precio guardado NO coincide con la funcion.
 -- Esperado: 0 filas.
+-- > A3 es un CONTROL: si la funcion calcula igual que como se cargaron los datos,
+-- >   no deberia haber diferencias. "<>" significa distinto.
 SELECT
     dp.cod_pedido,
     dp.cod_producto,
@@ -285,6 +403,14 @@ GO
 --   - total = 58000.00
 --   - stock DESPUES: producto 2 = 38, producto 4 = 29
 --   - stock tras el ROLLBACK: vuelve a 40 y 30
+-- > Como se llama al procedimiento:
+-- >   DECLARE @items dbo.tipo_items_pedido: una variable del tipo tabla.
+-- >   INSERT INTO @items ... VALUES (2, 2), (4, 1): se carga como una tabla comun.
+-- >   EXEC ... @cod_pedido = @nuevo OUTPUT: hay que repetir OUTPUT al llamar para
+-- >     recibir el valor.
+-- >   Todo va entre BEGIN TRANSACTION y ROLLBACK: el procedimiento ve que hay una
+-- >   transaccion abierta (@@TRANCOUNT = 1) y no abre otra; el ROLLBACK de afuera
+-- >   deshace la venta de prueba.
 BEGIN TRANSACTION;
 
 DECLARE @items dbo.tipo_items_pedido;
@@ -384,6 +510,8 @@ USE smarthome_store;
 GO
 
 -- Unidades disponibles; 0 si el producto no existe o esta inactivo
+-- > fn_stock_disponible(producto) -> INT: el stock, solo si el producto esta
+-- >   activo. ISNULL(..., 0): inexistente o inactivo da 0 (no se puede vender).
 CREATE OR ALTER FUNCTION dbo.fn_stock_disponible (@cod_producto INT)
 RETURNS INT
 AS
@@ -395,6 +523,13 @@ END;
 GO
 
 -- Pedidos de un cliente con su monto (funcion de tabla en linea)
+-- > fn_pedidos_cliente(cliente) -> TABLE: funcion de TABLA EN LINEA.
+-- >   RETURNS TABLE + RETURN (un solo SELECT): devuelve un conjunto de filas y se
+-- >   usa en el FROM como si fuera una tabla: SELECT * FROM dbo.fn_pedidos_cliente(2).
+-- >   Es como una vista con parametro. El optimizador la "expande" dentro de la
+-- >   consulta que la usa, por eso suele rendir mejor que una funcion escalar.
+-- >   LEFT JOIN con el detalle + ISNULL(SUM(...), 0): un pedido sin renglones
+-- >   aparece igual, con monto 0.
 CREATE OR ALTER FUNCTION dbo.fn_pedidos_cliente (@cod_cliente INT)
 RETURNS TABLE
 AS
@@ -425,6 +560,15 @@ GO
 -- (precio > 0, stock >= 0) siguen actuando como ultima barrera.
 
 
+-- > usp_producto_insertar: alta de un producto con validaciones previas.
+-- >   Valida primero y lanza un error claro (50101 a 50104) antes de que lo
+-- >   rechace la base con un mensaje generico de FK o CHECK.
+-- >   LTRIM(RTRIM(x)): quita los espacios de la izquierda y de la derecha, asi
+-- >   "   " cuenta como vacio.
+-- >   activo no se indica: toma el DEFAULT 1.
+-- >   @cod_producto OUTPUT + SCOPE_IDENTITY(): devuelve el codigo generado.
+-- >   El precio negativo no lo valida el procedimiento: lo frena el CHECK de la
+-- >   tabla (CK_producto_precio_lista), que es la ultima barrera (prueba D6).
 CREATE OR ALTER PROCEDURE dbo.usp_producto_insertar
     @nombre        VARCHAR(50),
     @descripcion   VARCHAR(1000),
@@ -472,6 +616,12 @@ GO
 --                la carpeta docs/etapa-05/triggers_auditoria).
 
 
+-- > usp_producto_modificar: reemplaza todos los datos del producto.
+-- >   Cambiar el precio de lista NO cambia las ventas ya hechas, porque el precio
+-- >   quedo copiado en detalle_pedido (RN.03).
+-- >   El cambio de precio o de stock lo registra el trigger de auditoria (RN.14),
+-- >   sin que el procedimiento haga nada.
+-- >   @activo BIT = 1: parametro opcional; si no se pasa, el producto queda activo.
 CREATE OR ALTER PROCEDURE dbo.usp_producto_modificar
     @cod_producto  INT,
     @nombre        VARCHAR(50),
@@ -524,6 +674,12 @@ GO
 
 
 
+-- > usp_producto_eliminar: decide entre borrar o dar de baja.
+-- >   Sin historial (nunca vendido ni comprado): DELETE fisico -> 'ELIMINADO'.
+-- >   Con historial: UPDATE activo = 0 (baja LOGICA) -> 'BAJA_LOGICA'. El producto
+-- >     sigue existiendo para que las ventas y compras viejas no pierdan su dato;
+-- >     ademas, la FK de detalle_pedido impediria el DELETE.
+-- >   @resultado VARCHAR(12) OUTPUT: le dice a quien llamo que se hizo.
 CREATE OR ALTER PROCEDURE dbo.usp_producto_eliminar
     @cod_producto INT,
     @resultado    VARCHAR(12) OUTPUT
@@ -592,6 +748,11 @@ GO
 --     pedidos confirmados y con pago aprobado de todos los clientes.
 -- Esperado: un renglon por pedido confirmado/aprobado; los pedidos 10
 --           (pendiente) y 11 (cancelado) no aparecen.
+-- > CROSS APPLY con una funcion de tabla: para CADA cliente ejecuta la funcion
+-- >   con su codigo y une las filas que devuelve. Un JOIN comun no puede pasarle
+-- >   una columna de la otra tabla como parametro; APPLY si.
+-- >   CROSS APPLY descarta a los clientes sin filas; OUTER APPLY los mantendria
+-- >   con NULL (como un LEFT JOIN).
 SELECT c.cod_cliente, c.nombre + ' ' + c.apellido AS cliente, t.cod_pedido, t.monto
 FROM dbo.cliente c
 CROSS APPLY dbo.fn_pedidos_cliente(c.cod_cliente) AS t
@@ -826,6 +987,12 @@ USE smarthome_store;
 GO
 SET NOCOUNT ON;
 
+-- > Como se mide:
+-- >   SYSDATETIME(): fecha y hora con mas precision que GETDATE().
+-- >   DATEDIFF(MILLISECOND, inicio, fin): milisegundos transcurridos.
+-- >   DECLARE @res TABLE (...): VARIABLE DE TABLA. Clave: el ROLLBACK no la afecta,
+-- >     por eso los tiempos sobreviven aunque se revierta todo lo insertado.
+-- >   Todo va en una transaccion que termina en ROLLBACK: no deja productos de prueba.
 DECLARE @n INT = 2000, @i INT, @t0 DATETIME2(3), @nom VARCHAR(50), @id INT;
 DECLARE @alic INT = (SELECT cod_alicuota FROM dbo.alicuota_iva WHERE porcentaje = 21.00);
 DECLARE @cat  INT = (SELECT cod_categoria FROM dbo.categoria WHERE nombre = N'Accesorios');
@@ -834,6 +1001,9 @@ DECLARE @res  TABLE (prueba VARCHAR(70), repeticiones INT, ms INT);
 BEGIN TRANSACTION;
 
 -- A) 2.000 INSERT directos, uno por uno ---------------------------------
+-- > A) WHILE: bucle de T-SQL. 2000 INSERT, uno por vuelta. CONCAT une textos y
+-- >   numeros sin convertirlos (y trata NULL como texto vacio).
+-- >   SET @i += 1: suma 1 a la variable.
 SET @i = 1;
 SET @t0 = SYSDATETIME();
 WHILE @i <= @n
@@ -846,6 +1016,8 @@ END;
 INSERT INTO @res VALUES ('A) INSERT directo en bucle', @n, DATEDIFF(MILLISECOND, @t0, SYSDATETIME()));
 
 -- B) 2.000 llamadas al procedimiento (con sus validaciones) -------------
+-- > B) Lo mismo, pero llamando al procedimiento: suma el costo de la llamada y de
+-- >   las validaciones (cuatro consultas por alta).
 SET @i = 1;
 SET @t0 = SYSDATETIME();
 WHILE @i <= @n
@@ -858,6 +1030,12 @@ END;
 INSERT INTO @res VALUES ('B) EXEC usp_producto_insertar en bucle', @n, DATEDIFF(MILLISECOND, @t0, SYSDATETIME()));
 
 -- C) un unico INSERT ... SELECT (operacion por conjuntos) ---------------
+-- > C) Un solo INSERT ... SELECT: inserta las 2000 filas en una sola sentencia
+-- >   (operacion por CONJUNTOS, como trabaja mejor SQL Server).
+-- >   Generador de numeros: ROW_NUMBER() sobre un CROSS JOIN de sys.all_objects
+-- >   consigo misma (tiene miles de filas, el producto da millones) y TOP (@n) se
+-- >   queda con las primeras 2000. ORDER BY (SELECT NULL) = "sin un orden en
+-- >   particular", porque ROW_NUMBER exige un ORDER BY.
 SET @t0 = SYSDATETIME();
 INSERT INTO dbo.producto (nombre, descripcion, precio_lista, cod_alicuota, stock, cod_categoria)
 SELECT CONCAT('BENCH-C ', x.i), 'Producto de prueba', 100.00, @alic, 1, @cat
@@ -867,6 +1045,11 @@ INSERT INTO @res VALUES ('C) INSERT ... SELECT (un solo comando)', @n, DATEDIFF(
 
 ROLLBACK TRANSACTION;
 
+-- > El ROLLBACK no devuelve los valores IDENTITY ya usados: el proximo producto
+-- >   saldria con un codigo salteado.
+-- >   DBCC CHECKIDENT (tabla, RESEED, n): reinicia el contador en n, y el proximo
+-- >   sera n + 1. Aca se arma como SQL dinamico (EXEC (@sql)); al final del
+-- >   script se hace lo mismo pasandole la variable directamente.
 -- Los identity avanzaron aunque se hizo ROLLBACK: se restablece el contador
 DECLARE @max INT = (SELECT ISNULL(MAX(cod_producto), 0) FROM dbo.producto);
 DECLARE @sql NVARCHAR(200) = N'DBCC CHECKIDENT (''dbo.producto'', RESEED, ' + CAST(@max AS NVARCHAR(12)) + N')';
@@ -874,6 +1057,8 @@ EXEC (@sql);
 
 -- D y E) funcion escalar vs. consulta directa --------------------------------
 --    12 pedidos x 20.000 repeticiones = 240.000 calculos del monto
+-- > SELECT ... INTO #nums: crea una TABLA TEMPORAL (empieza con #) con 20000
+-- >   numeros. Vive en tempdb y solo la ve esta sesion; se borra con DROP TABLE.
 SELECT TOP (20000) ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS i
 INTO #nums
 FROM sys.all_objects a CROSS JOIN sys.all_objects b;
@@ -881,6 +1066,14 @@ FROM sys.all_objects a CROSS JOIN sys.all_objects b;
 DECLARE @acum DECIMAL(18, 2);
 
 SET @t0 = SYSDATETIME();
+-- > D) Funcion escalar: SUM(dbo.fn_total_pedido(...)) sobre 12 pedidos x 20000
+-- >   = 240000 llamadas.
+-- > E) Lo mismo con la subconsulta escrita directamente (CROSS APPLY).
+-- > Lo esperable por teoria es que la funcion escalar sea mas lenta, porque se
+-- >   ejecuta fila por fila. En la medicion del equipo fue mas rapida. Una
+-- >   explicacion posible es que SQL Server 2019 y posteriores pueden "inlinear"
+-- >   funciones escalares simples como esta (convertirlas en parte de la consulta),
+-- >   pero no se verifico en el plan de ejecucion.
 SELECT @acum = SUM(dbo.fn_total_pedido(p.cod_pedido))
 FROM dbo.pedido p CROSS JOIN #nums;
 INSERT INTO @res VALUES ('D) monto con funcion escalar fn_total_pedido', 240000, DATEDIFF(MILLISECOND, @t0, SYSDATETIME()));
@@ -904,6 +1097,10 @@ GO
 -- Deja el catalogo como en la carga inicial, para que los demas temas
 -- den los resultados documentados.
 -- =============================================================
+-- > Limpieza: borra los productos de las pruebas D1 y D2 (LIKE 'LOTE-A %':
+-- >   empiezan con ese texto; % es "cualquier cosa") y reinicia el IDENTITY.
+-- >   WITH NO_INFOMSGS: no muestra los mensajes informativos de DBCC.
+-- > Esperado: productos = 10, como en la carga inicial.
 DELETE FROM dbo.producto WHERE nombre LIKE 'LOTE-A %' OR nombre LIKE 'LOTE-P %';
 
 DECLARE @max_producto INT = (SELECT ISNULL(MAX(cod_producto), 0) FROM dbo.producto);

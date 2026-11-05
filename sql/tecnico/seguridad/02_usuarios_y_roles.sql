@@ -10,11 +10,32 @@
 -- el servidor tiene que estar en modo mixto.
 -- =============================================================
 
+-- =============================================================
+-- GUIA DE ESTUDIO PARA LA DEFENSA (rama estudio-defensa, no se sube)
+-- Las lineas "-- >" son notas de estudio.
+-- > Dos niveles de seguridad en SQL Server:
+-- >   LOGIN (servidor): permite CONECTARSE al servidor. Se crea en master.
+-- >   USER (base de datos): permite entrar a UNA base, y ahi se le dan permisos.
+-- >   Un usuario se crea "FOR LOGIN": conecta el login con la base.
+-- > Modo de autenticacion:
+-- >   Solo Windows: se entra con la cuenta de Windows.
+-- >   Mixto: ademas acepta logins de SQL Server con usuario y contrasena (los de
+-- >   este script). Hay que activarlo en el servidor y reiniciar el servicio.
+-- > Roles fijos de la base usados aca:
+-- >   db_owner     : puede hacer todo en la base.
+-- >   db_datareader: puede leer (SELECT) todas las tablas, y nada mas.
+-- > Parte 1: permisos dados a cada usuario. Parte 2: permisos dados a un ROL, que
+-- >   reciben todos sus miembros.
+-- =============================================================
+-- > SERVERPROPERTY('IsIntegratedSecurityOnly'): 1 = solo Windows; 0 = mixto.
 -- M1. Modo de autenticación. 0 = mixto (Windows y SQL Server); 1 = solo Windows.
 SELECT SERVERPROPERTY('IsIntegratedSecurityOnly') AS solo_windows;
 GO
 
 -- Inicios de sesión del servidor
+-- > SUSER_ID('x') IS NULL: crea el login solo si no existe.
+-- > CREATE LOGIN ... WITH PASSWORD: login de SQL Server, con contrasena. SQL Server
+-- >   aplica la politica de contrasenas de Windows (largo y complejidad).
 IF SUSER_ID('smarthome_admin') IS NULL
     CREATE LOGIN smarthome_admin WITH PASSWORD = 'Demo.Admin.2026!';
 IF SUSER_ID('smarthome_lectura') IS NULL
@@ -51,6 +72,10 @@ GO
 -- U1. INSERT directo con el administrador. Esperado: se inserta 1 fila; se revierte.
 BEGIN TRANSACTION;
 
+-- > EXECUTE AS LOGIN = 'x': la sesion pasa a actuar como ese login (y como su
+-- >   usuario en esta base) hasta el REVERT. Asi se prueban permisos sin
+-- >   conectarse con otra cuenta.
+-- > USER_NAME(): el usuario de la base con el que se esta actuando.
 EXECUTE AS LOGIN = 'smarthome_admin';
 INSERT INTO dbo.pedido (calle, numero, ciudad, provincia, cod_postal, cod_cliente, cod_metodo_pago)
 VALUES ('Prueba', '1', 'Corrientes', 'CORRIENTES', '3400', 1, 1);
@@ -67,6 +92,8 @@ REVERT;
 GO
 
 -- U3. INSERT directo con el usuario de solo lectura. Esperado: error 229.
+-- > U3 y U5: db_datareader solo da SELECT; un INSERT o un UPDATE dan error 229
+-- >   (permiso denegado sobre el objeto).
 EXECUTE AS LOGIN = 'smarthome_lectura';
 
 BEGIN TRY
@@ -86,6 +113,11 @@ GO
 -- tablas (encadenamiento de propiedad); se revierte.
 BEGIN TRANSACTION;
 
+-- > U4: el mismo usuario que no puede insertar en pedido vende a traves del
+-- >   procedimiento. Tiene EXECUTE, y por el encadenamiento de propiedad (mismo
+-- >   dueno, dbo) no se controlan sus permisos sobre pedido ni producto.
+-- >   Ventaja: el usuario solo puede cambiar datos de la forma que el
+-- >   procedimiento permite, con sus validaciones.
 EXECUTE AS LOGIN = 'smarthome_lectura';
 
 DECLARE @items dbo.tipo_items_pedido;
@@ -128,6 +160,10 @@ GO
 -- =============================================================
 -- PARTE 2: permisos a nivel de roles
 -- =============================================================
+-- > CREATE ROLE: rol definido por nosotros. GRANT SELECT ON producto TO rol: todos
+-- >   sus miembros pueden leer producto y nada mas.
+-- > Ventaja de los roles: si entra un empleado nuevo, se lo agrega al rol en vez
+-- >   de repetir cada permiso.
 IF DATABASE_PRINCIPAL_ID('rol_lectura_producto') IS NULL
     CREATE ROLE rol_lectura_producto;
 GO
@@ -145,6 +181,9 @@ ALTER ROLE rol_lectura_producto ADD MEMBER smarthome_con_rol;
 GO
 
 -- R1. Usuario con el rol. Esperado: lee los 10 productos.
+-- > R1, R2 y R3: con el rol lee producto (R1); sin el rol, error 229 (R2); con el
+-- >   rol, pero sobre otra tabla, tambien 229 (R3): el permiso es solo sobre la
+-- >   tabla indicada.
 EXECUTE AS LOGIN = 'smarthome_con_rol';
 SELECT 'R1' AS prueba, USER_NAME() AS usuario, COUNT(*) AS productos FROM dbo.producto;
 REVERT;

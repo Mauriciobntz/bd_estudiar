@@ -2,6 +2,38 @@
 -- ETAPA V - Tema 2: Transacciones
 -- =============================================================
 
+-- =============================================================
+-- GUIA DE ESTUDIO PARA LA DEFENSA (rama estudio-defensa, no se sube)
+-- Las lineas "-- >" son notas de estudio.
+-- > TRANSACCION: un grupo de sentencias que se ejecuta COMPLETO o no se ejecuta.
+-- > ACID:
+-- >   Atomicidad  : todo o nada (T3: si falla el detalle, tampoco queda el pedido).
+-- >   Consistencia: al terminar se cumplen todas las reglas (CHECK, FK, stock >= 0).
+-- >   Aislamiento : una transaccion no ve los cambios a medias de otra
+-- >                 (UPDLOCK, HOLDLOCK en los procedimientos).
+-- >   Durabilidad : despues del COMMIT el cambio queda guardado aunque se corte
+-- >                 la luz (SQL Server lo escribe antes en el log).
+-- > Instrucciones:
+-- >   BEGIN TRANSACTION        abre la transaccion (@@TRANCOUNT suma 1).
+-- >   COMMIT TRANSACTION       confirma; recien con el COMMIT mas externo es permanente.
+-- >   ROLLBACK TRANSACTION     deshace TODO lo hecho desde el BEGIN mas externo.
+-- >   SAVE TRANSACTION nombre  marca un punto de guardado.
+-- >   ROLLBACK TRANSACTION nombre  deshace solo hasta ese punto; la transaccion
+-- >                            sigue abierta.
+-- > Funciones de control:
+-- >   @@TRANCOUNT   cuantas transacciones hay abiertas (0 = ninguna).
+-- >   XACT_STATE()  1 = abierta y se puede confirmar; 0 = no hay transaccion;
+-- >                 -1 = condenada: solo se puede hacer ROLLBACK completo.
+-- >   @@ROWCOUNT    cuantas filas afecto la ultima sentencia.
+-- >   ERROR_NUMBER(), ERROR_MESSAGE()  numero y texto del error, dentro del CATCH.
+-- > Patron que usan todas las pruebas:
+-- >   BEGIN TRY  BEGIN TRANSACTION ... COMMIT  END TRY
+-- >   BEGIN CATCH  IF @@TRANCOUNT > 0 ROLLBACK; mostrar el error  END CATCH
+-- >   El IF @@TRANCOUNT > 0 evita un error por hacer ROLLBACK sin transaccion.
+-- > SET XACT_ABORT ON (al principio): cualquier error aborta y revierte la
+-- >   transaccion entera. Con OFF, algunos errores solo cancelan la sentencia
+-- >   que fallo y la transaccion sigue abierta.
+-- =============================================================
 USE smarthome_store;
 GO
 
@@ -254,6 +286,24 @@ GO
 --   50011 el pedido ya fue despachado o entregado
 -- =============================================================
 
+-- > sp_cancelar_pedido (RN.30): cancela un pedido y, si estaba confirmado,
+-- >   devuelve las unidades al stock, todo en la misma transaccion.
+-- > Paso a paso:
+-- >   1. Lee estado y estado_envio con UPDLOCK, HOLDLOCK: bloquea el pedido hasta
+-- >      el final, asi nadie lo factura ni lo despacha mientras se cancela.
+-- >   2. Validaciones, cada una con su error:
+-- >      estado NULL (no encontro el pedido)  -> 50008 inexistente;
+-- >      ya cancelado                         -> 50009;
+-- >      tiene factura                        -> 50010 (es un comprobante fiscal);
+-- >      despachado o entregado               -> 50011 (la mercaderia ya salio).
+-- >   3. Si estaba 'confirmado', suma al stock la cantidad de cada renglon. Un
+-- >      pedido pendiente nunca desconto stock, asi que no se repone nada.
+-- >   4. Pasa el pedido a 'cancelado' y borra el estado de envio.
+-- > Si el paso 4 fallara despues del 3, sin transaccion quedaria el stock
+-- >   repuesto y el pedido sin cancelar. Con la transaccion, se revierte todo.
+-- > Usa el mismo esquema que sp_registrar_venta_completa: XACT_ABORT ON y
+-- >   @tran_propia (abre una transaccion solo si no hay otra abierta).
+-- > IN ('despachado', 'entregado'): igual a "= 'despachado' OR = 'entregado'".
 CREATE OR ALTER PROCEDURE dbo.sp_cancelar_pedido
     @cod_pedido INT
 AS
@@ -467,6 +517,11 @@ SELECT 'T7 - ANTES' AS momento,
        (SELECT COUNT(*) FROM dbo.detalle_pedido) AS lineas,
        (SELECT stock FROM dbo.producto WHERE cod_producto = @cod_producto) AS stock_producto;
 
+-- > T7 a T9: la misma venta escrita a mano con BEGIN TRANSACTION, sin procedimiento.
+-- > Truco del UPDATE: "WHERE ... AND stock >= @cantidad" solo modifica la fila si
+-- >   alcanza el stock. Si no alcanza, no modifica nada, @@ROWCOUNT vale 0 y se
+-- >   lanza el error 50211, que lleva al CATCH y al ROLLBACK de los dos INSERT.
+-- > IVA contenido: precio * alicuota / (100 + alicuota). Con 21 %: 25000 * 21 / 121.
 SET XACT_ABORT ON;
 BEGIN TRY
     BEGIN TRANSACTION;
@@ -681,6 +736,10 @@ SELECT 'T10 - ANTES' AS momento,
        (SELECT COUNT(*) FROM dbo.detalle_pedido) AS lineas,
        (SELECT stock FROM dbo.producto WHERE cod_producto = @cod_producto) AS stock_producto;
 
+-- > T10 SIN transaccion y con XACT_ABORT OFF: cada sentencia se confirma sola
+-- >   (modo autocommit). El INSERT del pedido ya quedo guardado cuando se lanza el
+-- >   error, asi que queda un pedido SIN renglones (huerfano): justo lo que una
+-- >   transaccion evita. Comparar con T8, que tiene el mismo error y no deja nada.
 SET XACT_ABORT OFF;
 BEGIN TRY
     INSERT INTO dbo.pedido
@@ -730,6 +789,15 @@ GO
 -- =============================================================
 
 SET NOCOUNT ON;
+-- > T11 a T13, ANIDAMIENTO: SQL Server no tiene transacciones anidadas reales.
+-- >   Un BEGIN dentro de otro solo suma 1 a @@TRANCOUNT.
+-- >   COMMIT interno: solo resta 1; no confirma nada todavia.
+-- >   ROLLBACK (sin nombre, en cualquier nivel): deshace TODO y deja @@TRANCOUNT en 0.
+-- >   Para deshacer solo una parte hay que usar SAVE TRANSACTION.
+-- >   El nombre en "BEGIN TRANSACTION externa" es solo una etiqueta: no permite
+-- >   hacer ROLLBACK de la interna sola.
+-- > PRINT muestra texto en la pestana Mensajes. CAST(@@TRANCOUNT AS VARCHAR(3))
+-- >   convierte el numero en texto para poder concatenarlo con "+".
 SET XACT_ABORT OFF;   -- estas demostraciones se hacen con el valor por defecto
 
 -- T11) COMMIT interno + ROLLBACK externo
@@ -800,6 +868,25 @@ GO
 -- Codigo de error propio:
 --   50221 la compra no existe o no esta en estado pendiente
 -- =============================================================
+-- > usp_confirmar_compra (RN.20 y RN.09): pasa una compra de pendiente a
+-- >   recibida y suma sus unidades al stock.
+-- > Es la otra forma de convivir con la transaccion de quien lo llama:
+-- >   Sin transaccion abierta (@@TRANCOUNT = 0): abre la suya y la confirma.
+-- >   Con una abierta: crea un PUNTO DE GUARDADO (SAVE TRANSACTION). Si falla,
+-- >     deshace SOLO su parte (ROLLBACK al punto) y el llamador puede seguir.
+-- > Por eso usa XACT_ABORT OFF: con ON, el error condenaria la transaccion del
+-- >   llamador (XACT_STATE = -1) y ya no se podria volver al punto de guardado.
+-- > Paso a paso:
+-- >   1. UPDATE de la compra con "AND estado = 'pendiente'": solo cambia si esta
+-- >      pendiente. @@ROWCOUNT = 0 significa inexistente, ya recibida o cancelada
+-- >      -> error 50221.
+-- >   2. UPDATE con JOIN: suma al stock la cantidad de cada renglon de la compra.
+-- >   3. CATCH: si la transaccion es propia, ROLLBACK completo (XACT_STATE() <> 0
+-- >      = hay algo que revertir). Si es del llamador y todavia se puede usar
+-- >      (XACT_STATE() = 1), vuelve al punto de guardado. Despues, THROW; relanza
+-- >      el error.
+-- > Diferencia con sp_registrar_venta_completa: la venta es todo o nada (si falla,
+-- >   se revierte tambien lo del llamador); la compra deshace solo su parte.
 CREATE OR ALTER PROCEDURE dbo.usp_confirmar_compra
     @cod_compra INT
 AS

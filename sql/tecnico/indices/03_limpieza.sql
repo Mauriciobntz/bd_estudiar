@@ -7,5 +7,7 @@
 USE smarthome_store;
 GO
 
+-- > DROP TABLE IF EXISTS: borra la tabla solo si existe; al borrarla se borran
+-- >   tambien sus indices.
 DROP TABLE IF EXISTS dbo.venta_historica;
 GO

@@ -7,11 +7,22 @@
 -- primaria y su trigger generaría un millón de filas de auditoría.
 -- =============================================================
 
+-- =============================================================
+-- GUIA DE ESTUDIO PARA LA DEFENSA (rama estudio-defensa, no se sube)
+-- Las lineas "-- >" son notas de estudio.
+-- > Para medir un indice hacen falta muchas filas: con las 12 ventas reales,
+-- >   cualquier consulta es instantanea y no se ve diferencia. Por eso se carga
+-- >   un millon de filas en una tabla aparte.
+-- > HEAP: una tabla sin indice agrupado. Las filas no tienen un orden, asi que
+-- >   para buscar por fecha SQL Server tiene que leer la tabla entera.
+-- =============================================================
 USE smarthome_store;
 GO
 SET NOCOUNT ON;
 GO
 
+-- > OBJECT_ID('dbo.x') IS NOT NULL: si la tabla ya existe (de una corrida
+-- >   anterior), se borra y se crea de nuevo.
 IF OBJECT_ID('dbo.venta_historica') IS NOT NULL
     DROP TABLE dbo.venta_historica;
 GO
@@ -30,6 +41,19 @@ GO
 
 -- Los valores se calculan a partir del número de fila, así la carga da
 -- siempre los mismos datos. 189216000 segundos son 6 años.
+-- > Generador de un millon de numeros: ROW_NUMBER() sobre un CROSS JOIN de
+-- >   sys.all_objects consigo misma (miles x miles de filas), quedandose con
+-- >   TOP (1000000). CAST(... AS BIGINT) evita el desborde al multiplicar.
+-- > WITH numeros AS (...): una CTE con esos numeros.
+-- > Las columnas salen del numero de fila con el resto de la division (%):
+-- >   1 + i % 10 da valores de 1 a 10. Asi la carga es "aleatoria" pero da siempre
+-- >   los mismos datos, y las mediciones se pueden repetir.
+-- > DATEADD(SECOND, n, '2021-01-01'): suma n segundos; 189216000 segundos son
+-- >   6 anios, asi que las fechas quedan entre 2021 y 2026.
+-- > REPLICATE('-', 100): repite el caracter 100 veces. Agranda cada fila para que
+-- >   la tabla ocupe mas paginas, como una tabla real.
+-- > WITH (TABLOCK): bloquea la tabla entera durante la carga; con un heap permite
+-- >   una carga masiva mucho mas rapida.
 WITH numeros AS
 (
     SELECT TOP (1000000) CAST(ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) AS BIGINT) AS i
@@ -48,6 +72,8 @@ SELECT i,
 FROM numeros;
 GO
 
+-- > Control: 1000000 filas, primera fecha en 2021 y ultima en 2026.
+-- > sys.indexes con type > 0: los indices de la tabla (type 0 es el heap mismo).
 SELECT COUNT(*) AS filas, MIN(fecha_venta) AS primera, MAX(fecha_venta) AS ultima
 FROM dbo.venta_historica;
 

@@ -6,6 +6,33 @@
 -- Después se carga sql/dml/cargar_datos.sql.
 -- Esperado: termina sin errores y la base queda con 22 tablas vacías.
 -- =============================================================
+-- =============================================================
+-- GUIA DE ESTUDIO PARA LA DEFENSA (rama estudio-defensa, no se sube)
+-- Las lineas "-- >" son notas de estudio.
+-- > Tipos de restricciones (integridad):
+-- >   PRIMARY KEY (PK): identifica cada fila; no se repite y no admite NULL.
+-- >     Crea un indice agrupado por defecto.
+-- >   FOREIGN KEY (FK): el valor tiene que existir en la tabla referenciada
+-- >     (integridad referencial). Ejemplo: no hay un pedido de un cliente inexistente.
+-- >   UNIQUE (UQ): no se repite, pero no es la clave (por ejemplo, el email).
+-- >   CHECK (CK): una condicion que cada fila tiene que cumplir (stock >= 0).
+-- >   DEFAULT (DF): el valor que toma la columna si no se indica.
+-- >   NOT NULL: la columna es obligatoria.
+-- > IDENTITY: SQL Server genera el codigo solo (1, 2, 3...). No se reutilizan los
+-- >   valores ni se vuelven atras con un ROLLBACK.
+-- > Acciones de una FK al borrar o actualizar la fila referenciada:
+-- >   ON DELETE NO ACTION: no deja borrar si hay filas que la referencian (un
+-- >     cliente con pedidos no se puede borrar).
+-- >   ON DELETE CASCADE: borra tambien las filas que la referencian (al borrar un
+-- >     pedido se borran sus renglones).
+-- >   ON UPDATE CASCADE: si cambia el codigo, se actualiza en las tablas que lo usan.
+-- > Nombres: PK_tabla, FK_tabla_otra, UQ_..., CK_..., DF_...: con nombre propio,
+-- >   el mensaje de error dice que regla fallo.
+-- > GO: separa lotes. Un CREATE TRIGGER, por ejemplo, tiene que ir solo en su lote.
+-- > Orden de las tablas: primero las que no dependen de otras (provincia), despues
+-- >   las que las referencian (localidad, cliente...). Una FK no puede apuntar a
+-- >   una tabla que todavia no existe.
+-- =============================================================
 CREATE DATABASE smarthome_store;
 GO
 USE smarthome_store;
@@ -35,6 +62,11 @@ GO
 -- La contraseña se guarda como hash y la fecha de alta es la actual (RN.16).
 -- Las direcciones están en la tabla direccion: el cliente puede registrarse sin ellas (RN.29)
 -- y solo necesita una para generar un pedido (RN.01).
+-- > CHECK (email LIKE '%_@__%.__%'): un control simple de formato.
+-- >   % = cualquier cantidad de caracteres; _ = exactamente un caracter.
+-- >   Exige algo, una arroba, algo, un punto y al menos dos caracteres.
+-- > CHECK (activo IN (0,1)): un BIT ya solo admite 0, 1 o NULL; el CHECK lo deja
+-- >   explicito.
 CREATE TABLE cliente
 (
   cod_cliente INT IDENTITY CONSTRAINT PK_cliente PRIMARY KEY,
@@ -66,6 +98,10 @@ CREATE TABLE usuario
 GO
 -- Categorías de productos (RN.06). cod_categoria_padre arma la jerarquía
 -- (por ejemplo, Audio dentro de Electrónica); NULL indica una categoría principal.
+-- > FK de categoria a si misma (autorrelacion): cod_categoria_padre apunta a otra
+-- >   fila de la misma tabla y arma la jerarquia.
+-- > UNIQUE (nombre, cod_categoria_padre): no puede haber dos subcategorias con el
+-- >   mismo nombre dentro del mismo padre.
 CREATE TABLE categoria
 (
   cod_categoria INT IDENTITY CONSTRAINT PK_categoria PRIMARY KEY,
@@ -127,6 +163,9 @@ GO
 -- Direcciones de clientes y proveedores (RN.04 y RN.29). Cada fila pertenece a un solo
 -- titular: un cliente o un proveedor, nunca a los dos ni a ninguno (CK_direccion_titular).
 -- Si se borra el titular, se borran sus direcciones (ON DELETE CASCADE).
+-- > CK_direccion_titular: la direccion es de un cliente O de un proveedor.
+-- >   (cliente no nulo y proveedor nulo) o (cliente nulo y proveedor no nulo).
+-- >   Una sola tabla para los dos titulares evita repetir la estructura.
 CREATE TABLE direccion
 (
   cod_direccion INT IDENTITY CONSTRAINT PK_direccion PRIMARY KEY,
@@ -145,11 +184,29 @@ CREATE TABLE direccion
 GO
 -- Cada titular tiene como máximo una dirección principal (RN.04 y RN.29).
 -- Son índices filtrados: solo cuentan las filas con principal = 1.
+-- > INDICE UNICO FILTRADO: "UNIQUE ... WHERE principal = 1" hace que la unicidad
+-- >   valga solo para las filas principales. Cada cliente puede tener muchas
+-- >   direcciones, pero solo una con principal = 1. Un UNIQUE comun sobre
+-- >   cod_cliente impediria tener mas de una direccion.
+-- > Los indices filtrados exigen SET QUOTED_IDENTIFIER ON: por eso esta al
+-- >   principio del script.
 CREATE UNIQUE INDEX UQ_direccion_principal_cliente ON direccion(cod_cliente) WHERE principal = 1 AND cod_cliente IS NOT NULL;
 GO
 CREATE UNIQUE INDEX UQ_direccion_principal_proveedor ON direccion(cod_proveedor) WHERE principal = 1 AND cod_proveedor IS NOT NULL;
 GO
 -- Si un titular con direcciones se queda sin principal, se marca la más reciente (RN.04)
+-- > trg_direccion_principal, trigger AFTER INSERT, UPDATE, DELETE sobre direccion:
+-- >   si un titular con direcciones se queda SIN principal (por ejemplo, porque
+-- >   se borro la principal), marca como principal la mas reciente (RN.04).
+-- >   IF @@ROWCOUNT = 0 RETURN: si la sentencia no afecto filas, no hace nada.
+-- >     Va primero, antes de que SET NOCOUNT cambie @@ROWCOUNT.
+-- >   CTE "titulares": los clientes o proveedores afectados, de inserted y de
+-- >     deleted. UNION (sin ALL) quita los repetidos.
+-- >   CTE "sin_principal": por titular, MAX(cod_direccion) = la mas reciente.
+-- >     HAVING MAX(CAST(principal AS INT)) = 0: el titular no tiene ninguna
+-- >     principal. Se hace CAST porque MAX no acepta BIT.
+-- >   UPDATE ... FROM ... JOIN: marca esas direcciones como principales.
+-- >   Trabaja por conjuntos: un DELETE de varias direcciones lo resuelve de una vez.
 CREATE TRIGGER trg_direccion_principal
 ON direccion
 AFTER INSERT, UPDATE, DELETE
@@ -192,6 +249,13 @@ GO
 -- Un pago aprobado exige la referencia de la transacción (CK_pedido_ref_transaccion).
 -- Los datos de envío se completan después del pago (RN.15), y cod_usuario es el empleado
 -- de depósito que despachó el pedido (RN.22); por eso aceptan NULL.
+-- > Las FK de pedido usan NO ACTION al borrar: no se puede borrar un cliente o un
+-- >   metodo de pago que tenga pedidos (se pierde el historial de ventas).
+-- > CK_pedido_fecha (fecha_pedido <= GETDATE()): no se registran pedidos con
+-- >   fecha futura.
+-- > CK_pedido_ref_transaccion: "estado_pago <> 'aprobado' OR ref NOT NULL"
+-- >   quiere decir "si el pago esta aprobado, tiene que tener la referencia".
+-- >   Es la forma de escribir un "si ... entonces" en un CHECK.
 CREATE TABLE pedido
 (
   cod_pedido INT IDENTITY CONSTRAINT PK_pedido PRIMARY KEY,
@@ -260,6 +324,10 @@ GO
 -- Comprobante de venta (RN.17 y RN.21): una sola factura por pedido (UQ_factura_pedido)
 -- y número único por punto de venta. La condición de IVA y el documento del cliente se
 -- guardan en la factura y no en el cliente (RN.18). cod_usuario es quien la emitió.
+-- > UQ_factura_pedido (cod_pedido): una sola factura por pedido. Es una relacion
+-- >   1 a 1 entre pedido y factura (RN.17).
+-- > UQ_factura_pto_nro (punto_venta, numero): el numero no se repite dentro del
+-- >   punto de venta, como exige la facturacion electronica.
 CREATE TABLE factura
 (
   cod_factura INT IDENTITY CONSTRAINT PK_factura PRIMARY KEY,
@@ -289,6 +357,11 @@ GO
 -- Renglones del pedido. Precio, alícuota e IVA se copian al vender y no cambian después
 -- (RN.03, RN.19 y RN.28). Un producto aparece una sola vez por pedido (clave compuesta).
 -- Si se borra el pedido, se borran sus renglones.
+-- > Clave primaria COMPUESTA (cod_pedido, cod_producto): la clave es la pareja.
+-- >   detalle_pedido es la tabla intermedia de la relacion muchos a muchos entre
+-- >   pedido y producto, con atributos propios (cantidad, precio, IVA).
+-- > Por que se copian precio y alicuota: si se leyeran del producto, una venta
+-- >   vieja cambiaria de importe al cambiar el catalogo (RN.03).
 CREATE TABLE detalle_pedido
 (
   item INT NOT NULL,
@@ -321,6 +394,8 @@ CREATE TABLE detalle_compra
 GO
 -- Promociones (RN.23). La fecha de fin no es anterior a la de inicio, y deben dar al menos
 -- un beneficio: descuento de hasta 75 % o cuotas sin interés (de 2 a 36).
+-- > CK_promocion_beneficio (descuento > 0 OR cuotas > 1): una promocion tiene que
+-- >   dar al menos un beneficio. Se combina con los otros CHECK de rango.
 CREATE TABLE promocion (
     cod_promocion        INT IDENTITY(1,1) NOT NULL,
     nombre               VARCHAR(100)      NOT NULL,
