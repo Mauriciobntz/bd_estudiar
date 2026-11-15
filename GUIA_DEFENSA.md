@@ -82,6 +82,26 @@ CREATE UNIQUE INDEX UQ_direccion_principal_cliente
   ON direccion(cod_cliente) WHERE principal = 1 AND cod_cliente IS NOT NULL;
 ```
 
+```sql
+-- crear_bd.sql:124  trigger que mantiene una dirección principal (RN.04)
+CREATE TRIGGER trg_direccion_principal ON direccion AFTER INSERT, UPDATE, DELETE AS
+BEGIN
+  IF @@ROWCOUNT = 0 RETURN;          -- antes del SET NOCOUNT, que pone @@ROWCOUNT en 0
+  SET NOCOUNT ON;
+  WITH titulares AS (                 -- clientes/proveedores tocados por la sentencia
+    SELECT cod_cliente, cod_proveedor FROM inserted
+    UNION SELECT cod_cliente, cod_proveedor FROM deleted),
+  sin_principal AS (                  -- de esos, los que quedaron sin principal
+    SELECT MAX(x.cod_direccion) AS cod_direccion          -- la más reciente
+    FROM direccion x
+    INNER JOIN titulares t ON x.cod_cliente = t.cod_cliente OR x.cod_proveedor = t.cod_proveedor
+    GROUP BY x.cod_cliente, x.cod_proveedor
+    HAVING MAX(CAST(x.principal AS INT)) = 0)              -- ninguna principal
+  UPDATE x SET x.principal = 1
+  FROM direccion x INNER JOIN sin_principal s ON s.cod_direccion = x.cod_direccion;
+END;
+```
+
 - **CASCADE vs NO ACTION** (pregunta clásica): `detalle_pedido` y `direccion` usan **CASCADE** (no existen sin su padre: entidad débil). `pedido → cliente` usa **NO ACTION**: no se puede borrar un cliente con ventas (se perdería historial).
 
 ### Etapa IV — Consultas (Unidad 5: SELECT, JOIN, agregación, subconsultas)
@@ -101,6 +121,78 @@ CREATE UNIQUE INDEX UQ_direccion_principal_cliente
 | avanzada:227 | Pedido de mayor importe | tablas derivadas + `= MAX` | pedido 4 |
 | avanzada:281 | Más caros que una categoría | **`> ALL`** | 1 producto |
 | avanzada:318 | Facturas sobre el promedio de su tipo | subconsulta correlacionada | 5 facturas |
+
+**Ejemplos de código de las consultas:**
+
+```sql
+-- consulta_avanzada.sql:9  HAVING contra un promedio (no se puede AVG(SUM(...)): tabla derivada "t")
+SELECT c.cod_cliente, c.nombre + ' ' + c.apellido AS cliente,
+       COUNT(DISTINCT p.cod_pedido)                AS cant_pedidos,   -- DISTINCT: el JOIN repite el pedido
+       SUM(dp.cantidad * dp.precio_unitario_venta) AS total_comprado
+FROM cliente c
+LEFT JOIN direccion dir ON dir.cod_cliente = c.cod_cliente AND dir.principal = 1  -- en el ON, no en el WHERE
+INNER JOIN pedido p          ON p.cod_cliente = c.cod_cliente
+INNER JOIN detalle_pedido dp ON dp.cod_pedido = p.cod_pedido
+WHERE p.estado = 'confirmado' AND p.estado_pago = 'aprobado'                      -- definición de VENTA
+GROUP BY c.cod_cliente, c.nombre, c.apellido
+HAVING SUM(dp.cantidad * dp.precio_unitario_venta) >
+       (SELECT AVG(t.total_cliente)
+        FROM (SELECT SUM(dp2.cantidad * dp2.precio_unitario_venta) AS total_cliente
+              FROM pedido p2 INNER JOIN detalle_pedido dp2 ON dp2.cod_pedido = p2.cod_pedido
+              WHERE p2.estado = 'confirmado' AND p2.estado_pago = 'aprobado'
+              GROUP BY p2.cod_cliente) AS t)
+ORDER BY total_comprado DESC;   -- acá sí vale el alias: ORDER BY va último en el OLP
+```
+
+```sql
+-- consulta_avanzada.sql:42  CTE (expresión de tabla común): costo promedio PONDERADO
+DECLARE @margen_minimo DECIMAL(5,2) = 25.00;    -- el ";" antes del WITH es obligatorio
+WITH costo_prod AS (
+    SELECT dc.cod_producto,
+           SUM(dc.cantidad * dc.costo_unitario) / SUM(dc.cantidad) AS costo_promedio
+    FROM detalle_compra dc
+    INNER JOIN compra co ON co.cod_compra = dc.cod_compra
+    WHERE co.estado = 'recibida'
+    GROUP BY dc.cod_producto
+)
+SELECT ...  -- se une a la CTE como si fuera una tabla
+```
+
+```sql
+-- consulta_avanzada.sql:109  NOT EXISTS correlacionado (clientes sin ninguna venta)
+SELECT c.cod_cliente, c.nombre + ' ' + c.apellido AS cliente,
+       (SELECT COUNT(*) FROM pedido p2 WHERE p2.cod_cliente = c.cod_cliente) AS pedidos_registrados
+FROM cliente c
+WHERE NOT EXISTS (SELECT 1 FROM pedido p
+                  WHERE p.cod_cliente = c.cod_cliente          -- usa la fila de afuera
+                    AND p.estado = 'confirmado' AND p.estado_pago = 'aprobado');
+-- Por qué no NOT IN: si la subconsulta trae un NULL, "x NOT IN (1, NULL)" da UNKNOWN y no devuelve nada.
+```
+
+```sql
+-- consulta_avanzada.sql:281  > ALL: mayor que CADA valor de la lista (= mayor que el máximo)
+WHERE pr.precio_lista > ALL (SELECT p2.precio_lista
+                             FROM producto p2
+                             INNER JOIN categoria c2 ON c2.cod_categoria = p2.cod_categoria
+                             WHERE c2.nombre = @categoria_ref)
+-- Trampa: si la categoría no existe, la lista queda vacía y > ALL es verdadero para todos.
+```
+
+```sql
+-- factura_comprobante.sql:40  función de VENTANA: total corrido sin agrupar las filas
+SUM(dp.cantidad * dp.precio_unitario_venta)
+    OVER (ORDER BY dp.item ROWS UNBOUNDED PRECEDING) AS total_acumulado
+-- GROUP BY junta filas en una; OVER mantiene todas y le agrega el cálculo a cada una.
+
+-- reporte_agregado.sql:38  autorrelación + COALESCE (sube cada subcategoría a su padre)
+LEFT JOIN categoria padre ON padre.cod_categoria = cat.cod_categoria_padre
+...
+GROUP BY COALESCE(padre.cod_categoria, cat.cod_categoria), COALESCE(padre.nombre, cat.nombre)
+
+-- reporte_agregado.sql:33  rango de fechas que incluye todo el último día (fecha_pedido es DATETIME)
+AND p.fecha_pedido >= @fecha_desde
+AND p.fecha_pedido <  DATEADD(DAY, 1, @fecha_hasta)
+```
 
 **Conceptos de la Unidad 5 que salen de estas consultas:**
 - **Orden lógico (OLP):** FROM → ON → JOIN → WHERE → GROUP BY → HAVING → SELECT → DISTINCT → ORDER BY. Por eso un alias del SELECT **no** sirve en WHERE pero **sí** en ORDER BY.
@@ -222,6 +314,40 @@ WHERE cod_pedido = @cod_pedido;
 - `ROLLBACK` sin nombre (en cualquier nivel) **deshace todo** y deja `@@TRANCOUNT` en 0.
 - Para deshacer solo una parte: `SAVE TRANSACTION punto` + `ROLLBACK TRANSACTION punto`.
 
+```sql
+-- transacciones/scripts.sql:735  T11: el COMMIT interno no confirma nada
+BEGIN TRANSACTION externa;          -- @@TRANCOUNT = 1
+    BEGIN TRANSACTION interna;      -- @@TRANCOUNT = 2
+        INSERT INTO categoria (nombre) VALUES ('DEMO-ANIDADA-1');
+    COMMIT TRANSACTION interna;     -- @@TRANCOUNT = 1 (todavía no es permanente)
+ROLLBACK TRANSACTION externa;       -- @@TRANCOUNT = 0 y la fila desaparece
+
+-- T13: deshacer solo una parte
+BEGIN TRANSACTION;
+    INSERT ... 'DEMO-SP-A';
+    SAVE TRANSACTION punto_1;
+    INSERT ... 'DEMO-SP-B';
+    ROLLBACK TRANSACTION punto_1;   -- se va solo DEMO-SP-B; @@TRANCOUNT sigue en 1
+COMMIT TRANSACTION;                 -- queda DEMO-SP-A
+```
+
+```sql
+-- transacciones/scripts.sql:803  usp_confirmar_compra: abre la suya o usa un punto de guardado
+IF @@TRANCOUNT = 0 BEGIN BEGIN TRANSACTION; SET @tran_propia = 1; END
+ELSE SAVE TRANSACTION sv_confirmar_compra;
+
+UPDATE dbo.compra SET estado = 'recibida'
+WHERE cod_compra = @cod_compra AND estado = 'pendiente';
+IF @@ROWCOUNT = 0                                       -- no estaba pendiente o no existe
+    THROW 50221, 'La compra no existe o no esta en estado pendiente.', 1;
+...
+BEGIN CATCH
+    IF @tran_propia = 1 BEGIN IF XACT_STATE() <> 0 ROLLBACK TRANSACTION; END
+    ELSE IF XACT_STATE() = 1 ROLLBACK TRANSACTION sv_confirmar_compra;  -- solo su parte
+    THROW;                                              -- relanza el error original
+END CATCH;
+```
+
 **Dos estrategias en el proyecto:**
 - **Venta y cancelación** (`XACT_ABORT ON` + `@tran_propia`): si falla, se cae toda la transacción del llamador. Es todo o nada.
 - **Compra** (`usp_confirmar_compra`, `XACT_ABORT OFF` + `SAVE TRANSACTION`): si falla, deshace solo su parte y el llamador sigue (T16).
@@ -310,6 +436,25 @@ DENY  UPDATE ON dbo.pedido (estado) TO rol_aplicacion;           -- permiso por 
 GRANT EXECUTE ON dbo.sp_registrar_venta_completa TO rol_aplicacion;
 GRANT EXECUTE ON dbo.sp_cancelar_pedido          TO rol_aplicacion;
 GRANT EXECUTE ON TYPE::dbo.tipo_items_pedido     TO rol_aplicacion;
+```
+
+```sql
+-- 02_usuarios_y_roles.sql  login (servidor) -> usuario (base) -> rol
+CREATE LOGIN smarthome_lectura WITH PASSWORD = 'Demo.Lectura.2026!';   -- línea 21
+CREATE USER  smarthome_lectura FOR LOGIN smarthome_lectura;             -- línea 39
+ALTER ROLE db_datareader ADD MEMBER smarthome_lectura;                  -- línea 43: solo leer
+GRANT EXECUTE ON dbo.sp_registrar_venta_completa TO smarthome_lectura;  -- línea 47
+
+-- Probar con los permisos de otro usuario y volver
+EXECUTE AS LOGIN = 'smarthome_lectura';
+    INSERT INTO dbo.pedido (...) VALUES (...);   -- U3: error 229 (no tiene INSERT)
+    EXEC dbo.sp_registrar_venta_completa ...;    -- U4: funciona (encadenamiento de propiedad)
+REVERT;
+
+-- Rol propio (parte 2)
+CREATE ROLE rol_lectura_producto;                                 -- línea 132
+GRANT SELECT ON dbo.producto TO rol_lectura_producto;             -- línea 135
+ALTER ROLE rol_lectura_producto ADD MEMBER smarthome_con_rol;     -- línea 144
 ```
 
 | Archivo:línea | Prueba | Resultado |
