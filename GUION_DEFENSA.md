@@ -1,7 +1,7 @@
 # Guion de defensa: 5 a 7 minutos por tema
 
 > Un guion por tema técnico, para leerlo en voz alta y ensayarlo con el reloj.
-> Cada uno tiene unas 800 palabras, que son unos 6 minutos a ritmo tranquilo.
+> Cada uno tiene entre 550 y 750 palabras: unos 5 minutos hablando, y 6 o 7 con lo que se muestra en pantalla.
 > Estructura fija: **apertura → concepto → aplicación al proyecto → demostración → límites y cierre**.
 > Los textos entre corchetes `[ ]` son acciones: qué mostrar en pantalla mientras hablás.
 > Las líneas son las del repo del proyecto (`main`).
