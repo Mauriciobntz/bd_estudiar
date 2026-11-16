@@ -4,10 +4,19 @@
 -- Los códigos se cargan explícitos (IDENTITY_INSERT) para que las FK
 -- sean predecibles. Guardado en UTF-8 con BOM (acentos).
 -- Excepción: alicuota_iva tiene 6 registros, que son todas las
+-- alícuotas vigentes en Argentina.
 -- Esperado: termina sin errores y la consulta final muestra la cantidad
 -- de filas de cada una de las 22 tablas (el detalle está al final).
--- alícuotas vigentes en Argentina.
 -- =============================================================
+-- > QUÉ HACE: llena las 22 tablas con datos inventados pero coherentes entre sí. Son los
+-- >   datos sobre los que corren las pruebas de la Etapa III, las consultas de la IV y los
+-- >   cinco temas de la V: casi todos los "Esperado" del proyecto salen de acá.
+-- > ORDEN: primero las tablas padre y después las hijas (provincia → localidad → cliente y
+-- >   proveedor → direccion → pedido → detalle...). Cada FK exige que el registro al que
+-- >   apunta ya exista; con otro orden fallaría con el error 547.
+-- > SET IDENTITY_INSERT tabla ON: permite escribir a mano el código de una columna IDENTITY.
+-- >   Se apaga (OFF) al terminar cada tabla porque solo puede estar activo en una tabla a la vez.
+-- >   Así los códigos son fijos y las pruebas pueden decir "el pedido 10", "el producto 2".
 USE smarthome_store;
 GO
 SET QUOTED_IDENTIFIER ON; -- lo exigen los indices filtrados de direccion
@@ -94,6 +103,8 @@ SET IDENTITY_INSERT usuario OFF;
 GO
 
 -- 5 categorías principales (sin categoría padre).
+-- > categoria se carga en dos pasos porque cod_categoria_padre es una FK a la misma tabla
+-- >   (relación recursiva): las subcategorías necesitan que su padre ya exista.
 SET IDENTITY_INSERT categoria ON;
 INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
 (1, 'Electrónica', NULL),
@@ -116,6 +127,8 @@ SET IDENTITY_INSERT categoria OFF;
 GO
 
 -- 6 alícuotas de IVA, con el código que les asigna ARCA (ver la excepción del encabezado).
+-- > Sin IDENTITY_INSERT: la columna cod_alicuota no es IDENTITY. Los códigos que más
+-- >   aparecen: 5 = 21 % (casi todos los productos) y 4 = 10,5 % (la notebook, producto 5).
 INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
 (3, 'Cero', 0.00),
 (9, 'Mínima', 2.50),
@@ -126,6 +139,14 @@ INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
 GO
 
 -- 10 productos con precio neto (sin IVA) y stock inicial.
+-- > LOS PRODUCTOS QUE USAN LAS PRUEBAS:
+-- >   2 Auriculares BT, stock 40: lo usan casi todas las pruebas de la Etapa V
+-- >     (la venta lo baja a 39 y el ROLLBACK o la cancelación lo devuelven a 40).
+-- >   4 Funda Notebook, 6611,57 neto: con IVA 21 % da 8000,00 y con la promoción 4 (35 %)
+-- >     queda en 5200,00 (prueba A1 del tema 1).
+-- >   8 Lavarropas, stock 5: la prueba B2 pide 6 y espera el error 50005 (stock insuficiente).
+-- >   1 Smart TV (stock 12) y 9 Microondas (stock 15): T14 confirma la compra 9 y quedan 17 y 20.
+-- > precio_lista es NETO (RN.19): el IVA y el descuento los calcula fn_precio_final.
 SET IDENTITY_INSERT producto ON;
 INSERT INTO producto (cod_producto, nombre, descripcion, precio_lista, cod_alicuota, stock, cod_categoria) VALUES
 (1, 'Smart TV 50"', 'Televisor LED 4K UHD de 50 pulgadas con sistema Smart, WiFi y Bluetooth.', 289256.20, 5, 12, 6),
@@ -159,6 +180,10 @@ GO
 
 -- 22 direcciones: una principal por cliente (1 a 10) y por proveedor (11 a 20), y dos
 -- secundarias, la 21 del cliente 1 y la 22 del proveedor 3.
+-- > Cada titular tiene una sola dirección principal = 1: lo exigen los índices únicos
+-- >   filtrados UQ_direccion_principal_*. Cargar otra principal para el cliente 1 daría
+-- >   el error 2601 (clave duplicada en un índice único).
+-- > La venta (sp_registrar_venta_completa) usa la principal si no se le indica otra (RN.04).
 SET IDENTITY_INSERT direccion ON;
 INSERT INTO direccion (cod_direccion, calle, numero, cod_postal, principal, cod_localidad, cod_cliente, cod_proveedor) VALUES
 (1, 'Junín', '1234', '3400', 1, 1, 1, NULL),
@@ -205,6 +230,14 @@ GO
 -- 12 pedidos en distintos estados, para las pruebas: 10 confirmados y pagados
 -- (7 entregados, el 8 despachado, y el 9 y el 12 sin despachar), el 10 pendiente
 -- y el 11 cancelado. La dirección de entrega es una copia de la del cliente.
+-- > LOS PEDIDOS QUE USAN LAS PRUEBAS:
+-- >   1 tiene factura → no se puede cancelar (T6e, error 50010).
+-- >   8 está despachado → no se podría cancelar (error 50011).
+-- >   10 pendiente → cancelarlo no mueve stock (T6b); S1 intenta cambiarle el estado (error 230).
+-- >   11 cancelado → cancelarlo otra vez da el error 50009 (T6d).
+-- > El 10 y el 11 no tienen pago aprobado, por eso ref_transaccion es NULL: el CHECK
+-- >   CK_pedido_ref_transaccion solo la exige cuando estado_pago = aprobado.
+-- > No hay columna total: el total se calcula desde detalle_pedido (RN.10).
 SET IDENTITY_INSERT pedido ON;
 INSERT INTO pedido (cod_pedido, fecha_pedido, estado, estado_pago, ref_transaccion, calle, numero, ciudad, provincia, cod_postal, estado_envio, fecha_envio, transportista, fecha_entrega, nro_seguimiento, cod_cliente, cod_metodo_pago, cod_usuario) VALUES
 (1, '2026-05-12T10:15:00', 'confirmado', 'aprobado', 'MP-88120451', 'Junín', '1234', 'Corrientes', 'CORRIENTES', '3400', 'entregado', '2026-05-13T09:00:00', 'Andreani', '2026-05-16', 'AND-000451201', 1, 3, 3),
@@ -224,6 +257,8 @@ GO
 
 -- 10 compras: 8 recibidas, la 9 pendiente (la usan las pruebas de usp_confirmar_compra
 -- en la Etapa V) y la 10 cancelada.
+-- > La compra 9 (pendiente) es la que confirma usp_confirmar_compra en T14 y T16.
+-- >   La 1 (recibida) y la 10 (cancelada) no se pueden confirmar: T15 espera el error 50221.
 SET IDENTITY_INSERT compra ON;
 INSERT INTO compra (cod_compra, fecha, estado, nro_comprobante_prov, cod_proveedor, cod_usuario) VALUES
 (1, '2026-03-02T09:00:00', 'recibida', '0001-00012345', 3, 3),
@@ -241,6 +276,9 @@ GO
 
 -- 10 registros de auditoría de ejemplo. usuario_bd no se indica: toma el login
 -- de quien ejecuta este script.
+-- > Son 10 filas de historia cargadas a mano: cuando corre este script todavía no existen
+-- >   los triggers (se crean en la Etapa V). Las pruebas A1 a A7 limpian lo que generan y
+-- >   controlan que al final la tabla vuelva a tener 10 filas.
 SET IDENTITY_INSERT auditoria ON;
 INSERT INTO auditoria (cod_auditoria, entidad, operacion, registro_id, fecha, valor_anterior, valor_nuevo, cod_usuario) VALUES
 (1, 'producto', 'UPDATE', 1, '2026-04-05T10:00:00', 'precio_lista=275000.00', 'precio_lista=289256.20', 1),
@@ -257,6 +295,10 @@ SET IDENTITY_INSERT auditoria OFF;
 GO
 
 -- 10 facturas, una por cada pedido confirmado y pagado (RN.17): pedidos 1 a 9 y 12.
+-- > total = subtotal + iva_total (ej. factura 1: 202479,34 + 42520,66 = 245000,00).
+-- > Tipo A para responsables inscriptos (con CUIT y razón social) y B para consumidor final (DNI).
+-- > Los pedidos 10 (pendiente) y 11 (cancelado) no tienen factura.
+-- > A7 intenta borrar la factura 1 y espera el error 50012 (trg_factura_no_borrar).
 SET IDENTITY_INSERT factura ON;
 INSERT INTO factura (cod_factura, tipo_comprobante, numero, fecha_emision, cond_iva_cliente, subtotal, iva_total, total, cae, fecha_vto_cae, tipo_documento_cliente, nro_documento_cliente, razon_social, punto_venta, cod_pedido, cod_usuario) VALUES
 (1, 'B', 1, '2026-05-12', 'Consumidor Final', 202479.34, 42520.66, 245000.00, '75432100000013', '2026-05-22', 'DNI', '38456123', NULL, 1, 1, 1),
@@ -273,6 +315,8 @@ SET IDENTITY_INSERT factura OFF;
 GO
 
 -- 17 renglones de compra, con el costo unitario de cada una (RN.08).
+-- > Sin IDENTITY_INSERT: la clave es compuesta (compra + producto), no hay IDENTITY.
+-- > Compra 9: 5 unidades del producto 1 y 5 del 9; son las que suma usp_confirmar_compra.
 INSERT INTO detalle_compra (cod_compra, cod_producto, cantidad, costo_unitario) VALUES
 (1, 1, 10, 210000.00),
 (1, 6, 15, 300000.00),
@@ -295,6 +339,14 @@ GO
 
 -- 18 renglones de pedido. El precio ya incluye el IVA y el descuento de la promoción
 -- vigente: es el precio que quedó congelado al vender (RN.03 y RN.19).
+-- > CÓMO SE CALCULAN LOS NÚMEROS:
+-- >   precio = precio_lista × (1 + IVA) × (1 − descuento). Pedido 1: Smart TV
+-- >   289256,20 × 1,21 = 350000 y con 30 % del Hot Sale = 245000,00.
+-- >   iva_monto = importe − importe / (1 + IVA): el precio ya trae el IVA y acá se "desarma".
+-- >   Pedido 1: 245000 − 245000 / 1,21 = 42520,66.
+-- > El total del pedido es la suma de cantidad × precio (fn_total_pedido, prueba A2):
+-- >   pedido 2 = 2 × 21250 + 46750 = 89250,00; pedido 9 = 350000 + 55000,01 = 405000,01.
+-- > El pedido 11 está cancelado pero conserva su detalle: es historia, no se borra.
 INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_unitario_venta, alicuota_iva, iva_monto) VALUES
 (1, 1, 1, 1, 245000.00, 21.00, 42520.66),  -- descuento 30.00 % por promoción
 (2, 2, 1, 2, 21250.00, 21.00, 7376.03),  -- descuento 15.00 % por promoción
@@ -317,6 +369,10 @@ INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_uni
 GO
 
 -- 10 promociones.
+-- > Las fechas definen qué descuento aplica fn_descuento_vigente según el día:
+-- >   la 4 (35 %, producto 4) va del 15/09 al 15/10/2026; por eso A1 al 20/09 da 5200,00.
+-- > La 3 es solo de cuotas (descuento 0, 12 cuotas): no cuenta como descuento.
+-- > Toda promoción tiene que dar algún beneficio: descuento > 0 o más de una cuota (CHECK).
 SET IDENTITY_INSERT promocion ON;
 INSERT INTO promocion (cod_promocion, nombre, descripcion, fecha_inicio, fecha_fin, porcentaje_descuento, nro_cuotas) VALUES
 (1, 'Hot Sale 2026', 'Descuentos exclusivos en tecnología durante el Hot Sale.', '2026-05-11T00:00:00', '2026-05-13T23:59:59', 30.00, 1),
@@ -333,6 +389,8 @@ SET IDENTITY_INSERT promocion OFF;
 GO
 
 -- 16 asignaciones de productos a promociones.
+-- > Tabla puente de la relación muchos a muchos: un producto puede estar en varias
+-- >   promociones (el 2 está en la 2 y en la 6); si coinciden, se aplica la de mayor descuento (RN.24).
 INSERT INTO promocion_producto (cod_promocion, cod_producto) VALUES
 (1, 1),
 (1, 6),
@@ -428,6 +486,8 @@ GO
 -- detalle_compra 17, pedido 12, detalle_pedido 18, factura 10, auditoria 10,
 -- promocion 10, promocion_producto 16, slide 10, multimedia 12, especificacion 10
 -- y especificacion_producto 16.
+-- > UNION ALL junta los 22 conteos en una sola grilla. ALL no busca duplicados, por eso es
+-- >   más rápido que UNION (y acá no hay duplicados posibles: cada fila es una tabla distinta).
 SELECT 'provincia' AS tabla, COUNT(*) AS registros FROM provincia
 UNION ALL SELECT 'localidad', COUNT(*) FROM localidad
 UNION ALL SELECT 'direccion', COUNT(*) FROM direccion
