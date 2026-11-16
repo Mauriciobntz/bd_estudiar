@@ -1,0 +1,689 @@
+﻿diff --git a/docs/etapa-05/triggers_auditoria/scripts.sql b/docs/etapa-05/triggers_auditoria/scripts.sql
+index 2a17eef..7daff43 100644
+--- a/docs/etapa-05/triggers_auditoria/scripts.sql
++++ b/docs/etapa-05/triggers_auditoria/scripts.sql
+@@ -1,5 +1,12 @@
+ -- =============================================================
+ -- ETAPA V - Tema 3: Triggers y auditoria
++-- La parte 1 crea los triggers y la parte 2 los prueba (A0 a A7).
++-- Los triggers de auditoria guardan en la tabla auditoria la operacion, el
++-- codigo del registro, el valor anterior y el nuevo, y el empleado que
++-- informo la aplicacion (SESSION_CONTEXT 'cod_usuario'; si no lo informo,
++-- el usuario 1). usuario_bd se completa solo con el login de la sesion.
++-- Requiere crear_bd.sql, cargar_datos.sql y el script de procedimientos
++-- (docs/etapa-05/procedimientos_funciones/scripts.sql), que usa A3.
+ -- =============================================================
+ 
+ USE smarthome_store;
+@@ -9,6 +16,7 @@ SET NOCOUNT ON;
+ GO
+ -- -------------------------------------------------------------
+ -- Trigger 1: producto (precio_lista y stock)
++-- Guarda: 'precio_lista=...; stock=...' antes y despues del cambio.
+ -- Un trigger se ejecuta una vez por sentencia: inserted y deleted
+ -- pueden tener muchas filas. El FULL OUTER JOIN cubre los tres
+ -- casos (INSERT, UPDATE y DELETE).
+@@ -49,6 +57,7 @@ GO
+ 
+ -- -------------------------------------------------------------
+ -- Trigger 2: pedido (estado, estado_pago y estado_envio)
++-- Guarda: 'estado=...; pago=...; envio=...' antes y despues del cambio.
+ -- Solo audita si alguno de esos campos cambia: un UPDATE de la
+ -- direccion de envio no genera fila.
+ -- -------------------------------------------------------------
+@@ -90,6 +99,7 @@ GO
+ 
+ -- -------------------------------------------------------------
+ -- Trigger 3: compra (estado)
++-- Guarda: 'estado=...' antes y despues del cambio.
+ -- -------------------------------------------------------------
+ CREATE OR ALTER TRIGGER dbo.trg_compra_auditoria
+ ON dbo.compra
+@@ -125,6 +135,7 @@ GO
+ 
+ -- -------------------------------------------------------------
+ -- Trigger 4: factura (emision y total)
++-- Guarda: 'tipo=...; numero=...; total=...' antes y despues del cambio.
+ -- Una factura no deberia modificarse; si se modifica, se audita
+ -- igual, sin filtrar por columna.
+ -- -------------------------------------------------------------
+@@ -331,6 +342,8 @@ GO
+ -- Usuario: 9. El trigger procesa todas las filas de inserted de
+ -- una vez: 10 filas de auditoria en una sola sentencia. Es la
+ -- prueba de que es set-based y no fila por fila.
++-- Esperado: filas_auditadas = 10; despues de la limpieza, el stock
++-- vuelve a su valor y auditoria_total es 10.
+ -- =============================================================
+ DECLARE @antes5 INT = (SELECT ISNULL(MAX(cod_auditoria), 0) FROM auditoria);
+ 
+diff --git a/sql/consultas/consulta_avanzada.sql b/sql/consultas/consulta_avanzada.sql
+index ad8fb4c..cdc7f12 100644
+--- a/sql/consultas/consulta_avanzada.sql
++++ b/sql/consultas/consulta_avanzada.sql
+@@ -11,6 +11,7 @@ GO
+ --      Tablas: cliente, direccion, localidad, provincia, pedido, detalle_pedido
+ --      Tecnica: GROUP BY + HAVING con subconsulta escalar (que a su
+ --      vez usa una tabla derivada) para calcular el promedio.
++--      Esperado: 4 clientes; el primero es Tomas Benitez, con 858000.00.
+ -- ---------------------------------------------------------------
+ SELECT
+     c.cod_cliente, c.nombre + ' ' + c.apellido AS cliente,
+@@ -46,6 +47,8 @@ ORDER BY total_comprado DESC;
+ --              (CTE) detalle_compra + compra
+ --      Tecnica: CTE + GROUP BY + HAVING con parametro.
+ --      Supuesto: costo_unitario de compra esta expresado sin IVA.
++--      Esperado (margen minimo 25 %): 4 productos; el de menor margen es
++--      Funda Notebook, con 13,86 %.
+ -- ---------------------------------------------------------------
+ DECLARE @margen_minimo DECIMAL(5,2) = 25.00;   -- porcentaje
+ 
+@@ -82,6 +85,7 @@ ORDER BY margen_producto;
+ --      (compras recibidas) supera el promedio por proveedor.
+ --      Tablas: proveedor, direccion, localidad, provincia, compra, detalle_compra
+ --      Tecnica: GROUP BY + HAVING con subconsulta escalar.
++--      Esperado: 3 proveedores; el primero es Informatica Central S.A., con 7160000.00.
+ -- ---------------------------------------------------------------
+ SELECT
+     pv.cod_proveedor, pv.razon_social, prov.nombre AS provincia,
+@@ -110,6 +114,7 @@ ORDER BY monto_comprado DESC;
+ --      Clientes registrados que nunca tuvieron una venta (pedido confirmado y pagado).
+ --      Tablas: cliente, direccion, localidad, provincia, pedido
+ --      Tecnica: NOT EXISTS (subconsulta correlacionada) + subconsulta escalar en el SELECT.
++--      Esperado: 1 cliente, Federico Molina, cuyo unico pedido esta pendiente.
+ -- ---------------------------------------------------------------
+ SELECT c.cod_cliente, c.nombre + ' ' + c.apellido AS cliente, loc.nombre AS ciudad, prov.nombre AS provincia, c.fecha_registro,
+     (SELECT COUNT(*) FROM pedido p2
+@@ -130,6 +135,7 @@ ORDER BY c.fecha_registro;
+ --      Tablas: usuario, pedido, compra, factura, auditoria
+ --      Tecnica: cuatro subconsultas escalares correlacionadas en el SELECT dentro de una
+ --      tabla derivada, que permite ordenar por el total sumado.
++--      Esperado: los 10 usuarios; los 3 de soporte tienen 0 operaciones.
+ -- ---------------------------------------------------------------
+ SELECT t.*, t.pedidos_gestionados + t.compras_registradas
+          + t.facturas_emitidas + t.cambios_auditados     AS total_operaciones
+@@ -149,6 +155,7 @@ ORDER BY total_operaciones DESC, t.cod_usuario;
+ --      Tablas: cliente, direccion, localidad, provincia, pedido, detalle_pedido, producto, categoria
+ --      Tecnica: IN con subconsultas anidadas en 4 niveles. IN no duplica clientes aunque
+ --      hayan comprado el producto en varios pedidos.
++--      Esperado con 'Audio': 3 clientes, Martin Romero, Joaquin Fernandez y Agustina Rios.
+ -- ---------------------------------------------------------------
+ DECLARE @categoria VARCHAR(50) = 'Audio';
+ 
+@@ -181,6 +188,8 @@ ORDER BY c.cod_cliente;
+ --      descuento y la mayor cantidad de cuotas disponibles. Para hoy: GETDATE().
+ --      Tablas: producto, promocion, promocion_producto
+ --      Tecnica: EXISTS + subconsultas escalares en el SELECT.
++--      Esperado al 10/10/2026: 4 productos (Heladera 300L, Funda Notebook,
++--      Lavarropas automatico 8kg y Microondas 25L).
+ -- ---------------------------------------------------------------
+ DECLARE @fecha DATETIME = '2026-10-10';
+ 
+@@ -209,6 +218,8 @@ ORDER BY p.cod_producto;
+ --      Tablas: proveedor, direccion, localidad, provincia, compra
+ --      Tecnica: NOT EXISTS + subconsulta escalar. Se prefiere a NOT IN porque NOT IN
+ --      devuelve un resultado vacio si la subconsulta contiene algun NULL.
++--      Esperado: 3 proveedores (1, 2 y 10): el 1 solo tiene la compra pendiente,
++--      el 10 la cancelada y el 2 ninguna.
+ -- ---------------------------------------------------------------
+ SELECT
+     pv.cod_proveedor, pv.razon_social, prov.nombre AS provincia,
+@@ -228,6 +239,7 @@ ORDER BY pv.cod_proveedor;
+ --      Pedido(s) de venta cuyo importe es el maximo (importe = suma de sus lineas).
+ --      Tablas: pedido, cliente, detalle_pedido
+ --      Tecnica: tablas derivadas + subconsulta escalar con MAX en el WHERE.
++--      Esperado: el pedido 4, de Tomas Benitez, con 858000.00.
+ -- ---------------------------------------------------------------
+ SELECT
+     p.cod_pedido, cl.nombre + ' ' + cl.apellido AS cliente, p.fecha_pedido, t.importe
+@@ -252,6 +264,7 @@ WHERE p.estado = 'confirmado'
+ --      Productos con stock inferior al promedio que ademas tuvieron ventas.
+ --      Tablas: producto, categoria, detalle_pedido, pedido
+ --      Tecnica: subconsulta escalar (AVG) y EXISTS en el WHERE + subconsultas en el SELECT.
++--      Esperado: 6 productos; el de menor stock es Lavarropas automatico 8kg (5).
+ -- ---------------------------------------------------------------
+ SELECT
+     pr.cod_producto, pr.nombre AS producto, cat.nombre AS categoria, pr.stock,
+@@ -283,6 +296,7 @@ ORDER BY pr.stock, pr.nombre;
+ --      Tablas: producto, categoria
+ --      Tecnica: operador > ALL. Atencion: si @categoria_ref no existe, la subconsulta queda
+ --      vacia y > ALL resulta verdadero para todos los productos.
++--      Esperado con 'Linea blanca': 1 producto, Notebook 15.6" Core i5.
+ -- ---------------------------------------------------------------
+ DECLARE @categoria_ref NVARCHAR(50) = N'Línea blanca';
+ 
+@@ -303,6 +317,7 @@ ORDER BY pr.precio_lista DESC;
+ --      Estado del ultimo pedido (cualquiera sea su estado) de cada cliente.
+ --      Tablas: pedido, cliente
+ --      Tecnica: subconsulta escalar correlacionada con MAX en el WHERE.
++--      Esperado: 10 filas, una por cliente; la primera es el pedido 12.
+ -- ---------------------------------------------------------------
+ SELECT
+     cl.cod_cliente, cl.nombre + ' ' + cl.apellido AS cliente, p.cod_pedido, p.fecha_pedido,
+@@ -319,6 +334,7 @@ ORDER BY p.fecha_pedido DESC;
+ --      Facturas cuyo total supera el promedio de las facturas del mismo tipo (A, B o C).
+ --      Tablas: factura
+ --      Tecnica: subconsulta escalar correlacionada con AVG en el WHERE y en el SELECT.
++--      Esperado: 5 facturas, la 3 (tipo A) y las 4, 5, 7 y 9 (tipo B).
+ -- ---------------------------------------------------------------
+ SELECT
+     f.cod_factura,
+diff --git a/sql/consultas/factura_comprobante.sql b/sql/consultas/factura_comprobante.sql
+index 5e5ccd5..021b574 100644
+--- a/sql/consultas/factura_comprobante.sql
++++ b/sql/consultas/factura_comprobante.sql
+@@ -14,6 +14,8 @@ DECLARE @cod_pedido INT = 4;
+ --      Tablas: factura, pedido, cliente, metodo_pago, usuario
+ --      Tecnica: INNER JOIN de 5 tablas + subconsulta escalar que recalcula el total
+ --      desde el detalle para controlar que coincida con el total registrado.
++--      Esperado para el pedido 4: factura B 0001-00000004 de Tomas Benitez,
++--      total 858000.00, igual a total_calculado.
+ -- ---------------------------------------------------------------
+ SELECT
+     f.tipo_comprobante,
+@@ -43,6 +45,8 @@ WHERE f.cod_pedido = @cod_pedido;
+ --      Tablas: factura, detalle_pedido, producto
+ --      Tecnica: INNER JOIN + columnas calculadas + SUM() OVER (ORDER BY item)
+ --      para el total acumulado.
++--      Esperado para el pedido 4: 2 renglones (Notebook 15.6" Core i5 y Funda
++--      Notebook); el total acumulado termina en 858000.00, el total de la factura.
+ -- ---------------------------------------------------------------
+ SELECT
+     dp.item,
+diff --git a/sql/consultas/reporte_agregado.sql b/sql/consultas/reporte_agregado.sql
+index 9478175..a0097d9 100644
+--- a/sql/consultas/reporte_agregado.sql
++++ b/sql/consultas/reporte_agregado.sql
+@@ -15,6 +15,8 @@ DECLARE @fecha_hasta DATE = '2026-09-30';
+ --      (la categoria a la que pertenece directamente el producto).
+ --      Tablas: pedido, detalle_pedido, producto, categoria
+ --      Tecnica: INNER JOIN + GROUP BY + COUNT(DISTINCT) y SUM.
++--      Esperado (01/07/2026 al 30/09/2026): 8 categorias; la primera es
++--      Linea blanca, con 1109999.99.
+ -- ---------------------------------------------------------------
+ SELECT
+     cat.cod_categoria,
+@@ -40,6 +42,8 @@ ORDER BY total_vendido DESC;
+ --      (ej. Audio y Televisores dentro de Electronica).
+ --      Tablas: pedido, detalle_pedido, producto, categoria (dos veces: hija y padre)
+ --      Tecnica: LEFT JOIN de categoria consigo misma + COALESCE + GROUP BY.
++--      Esperado: 5 categorias principales; la primera es Electrodomesticos,
++--      con 1279999.99.
+ -- ---------------------------------------------------------------
+ SELECT
+     COALESCE(padre.cod_categoria, cat.cod_categoria)          AS cod_categoria,
+diff --git a/sql/ddl/crear_bd.sql b/sql/ddl/crear_bd.sql
+index 95056fa..c10fb19 100644
+--- a/sql/ddl/crear_bd.sql
++++ b/sql/ddl/crear_bd.sql
+@@ -1,9 +1,18 @@
++-- =============================================================
++-- DDL: creación de la base SmartHome Store (equipo 37)
++-- Crea las 22 tablas con sus claves, restricciones y valores por defecto,
++-- los dos índices filtrados de direccion y el trigger de la dirección principal.
++-- Ejecutar primero, en un servidor que todavía no tenga la base smarthome_store.
++-- Después se carga sql/dml/cargar_datos.sql.
++-- Esperado: termina sin errores y la base queda con 22 tablas vacías.
++-- =============================================================
+ CREATE DATABASE smarthome_store;
+ GO
+ USE smarthome_store;
+ GO
+ SET QUOTED_IDENTIFIER ON; -- lo exigen los indices filtrados de direccion
+ GO
++-- Catálogo de provincias (RN.29). El nombre no se repite.
+ CREATE TABLE provincia
+ (
+   cod_provincia INT IDENTITY CONSTRAINT PK_provincia PRIMARY KEY,
+@@ -11,6 +20,8 @@ CREATE TABLE provincia
+   CONSTRAINT UQ_provincia_nombre UNIQUE (nombre)
+ );
+ GO
++-- Catálogo de localidades: cada una pertenece a una provincia (RN.29).
++-- Hay nombres repetidos en provincias distintas, por eso la unicidad es nombre + provincia.
+ CREATE TABLE localidad
+ (
+   cod_localidad INT IDENTITY CONSTRAINT PK_localidad PRIMARY KEY,
+@@ -20,6 +31,10 @@ CREATE TABLE localidad
+   CONSTRAINT FK_localidad_provincia FOREIGN KEY (cod_provincia) REFERENCES provincia(cod_provincia) ON DELETE NO ACTION ON UPDATE CASCADE
+ );
+ GO
++-- Clientes de la tienda online (RN.01). El email es único y debe tener un formato válido.
++-- La contraseña se guarda como hash y la fecha de alta es la actual (RN.16).
++-- Las direcciones están en la tabla direccion: el cliente puede registrarse sin ellas (RN.29)
++-- y solo necesita una para generar un pedido (RN.01).
+ CREATE TABLE cliente
+ (
+   cod_cliente INT IDENTITY CONSTRAINT PK_cliente PRIMARY KEY,
+@@ -35,6 +50,8 @@ CREATE TABLE cliente
+   CONSTRAINT CK_cliente_email CHECK (email LIKE '%_@__%.__%')
+ );
+ GO
++-- Usuarios internos (RN.12): nombre único y rol DEPOSITO, ADMINISTRADOR o SOPORTE,
++-- escrito en mayúsculas (RN.13). estado = 0 da de baja al usuario sin borrarlo.
+ CREATE TABLE usuario
+ (
+   cod_usuario INT IDENTITY CONSTRAINT PK_usuario PRIMARY KEY,
+@@ -47,6 +64,8 @@ CREATE TABLE usuario
+   CONSTRAINT CK_usuario_estado CHECK(estado IN (0,1))
+ );
+ GO
++-- Categorías de productos (RN.06). cod_categoria_padre arma la jerarquía
++-- (por ejemplo, Audio dentro de Electrónica); NULL indica una categoría principal.
+ CREATE TABLE categoria
+ (
+   cod_categoria INT IDENTITY CONSTRAINT PK_categoria PRIMARY KEY,
+@@ -58,6 +77,8 @@ CREATE TABLE categoria
+   CONSTRAINT CK_categoria_estado CHECK(activo IN (0,1))
+ );
+ GO
++-- Catálogo de alícuotas de IVA (RN.28). El código no es IDENTITY: se usa el que asigna
++-- ARCA a cada alícuota en la factura electrónica (decisión 13 de la Etapa II).
+ CREATE TABLE alicuota_iva
+ (
+   cod_alicuota INT CONSTRAINT PK_alicuota_iva PRIMARY KEY,
+@@ -68,6 +89,8 @@ CREATE TABLE alicuota_iva
+   CONSTRAINT CK_alicuota_iva_porcentaje CHECK (porcentaje >= 0 AND porcentaje < 100)
+ );
+ GO
++-- Productos del catálogo (RN.06 y RN.28). precio_lista es el precio neto, sin IVA (RN.19).
++-- El stock nunca queda negativo (RN.09 y RN.11). activo = 0 da de baja el producto sin borrarlo.
+ CREATE TABLE producto
+ (
+   cod_producto INT IDENTITY CONSTRAINT PK_producto PRIMARY KEY,
+@@ -85,6 +108,7 @@ CREATE TABLE producto
+   CONSTRAINT CK_producto_stock CHECK (stock >= 0)
+ );
+ GO
++-- Proveedores (RN.07). CUIT y email únicos; el CUIT con el formato NN-NNNNNNNN-N.
+ CREATE TABLE proveedor
+ (
+   cod_proveedor INT IDENTITY CONSTRAINT PK_proveedor PRIMARY KEY,
+@@ -100,6 +124,9 @@ CREATE TABLE proveedor
+   CONSTRAINT CK_proveedor_estado CHECK(activo IN (0,1))
+ );
+ GO
++-- Direcciones de clientes y proveedores (RN.04 y RN.29). Cada fila pertenece a un solo
++-- titular: un cliente o un proveedor, nunca a los dos ni a ninguno (CK_direccion_titular).
++-- Si se borra el titular, se borran sus direcciones (ON DELETE CASCADE).
+ CREATE TABLE direccion
+ (
+   cod_direccion INT IDENTITY CONSTRAINT PK_direccion PRIMARY KEY,
+@@ -116,6 +143,8 @@ CREATE TABLE direccion
+   CONSTRAINT CK_direccion_titular CHECK ((cod_cliente IS NOT NULL AND cod_proveedor IS NULL) OR (cod_cliente IS NULL AND cod_proveedor IS NOT NULL))
+ );
+ GO
++-- Cada titular tiene como máximo una dirección principal (RN.04 y RN.29).
++-- Son índices filtrados: solo cuentan las filas con principal = 1.
+ CREATE UNIQUE INDEX UQ_direccion_principal_cliente ON direccion(cod_cliente) WHERE principal = 1 AND cod_cliente IS NOT NULL;
+ GO
+ CREATE UNIQUE INDEX UQ_direccion_principal_proveedor ON direccion(cod_proveedor) WHERE principal = 1 AND cod_proveedor IS NOT NULL;
+@@ -149,6 +178,7 @@ BEGIN
+   INNER JOIN sin_principal s ON s.cod_direccion = x.cod_direccion;
+ END;
+ GO
++-- Métodos de pago aceptados (RN.05); el nombre no se repite.
+ CREATE TABLE metodo_pago
+ (
+   cod_metodo_pago INT IDENTITY CONSTRAINT PK_metodo_pago PRIMARY KEY,
+@@ -156,6 +186,12 @@ CREATE TABLE metodo_pago
+   CONSTRAINT UQ_metodo_pago_nombre UNIQUE (nombre)
+ );
+ GO
++-- Pedidos de venta (RN.02, RN.05 y RN.16). El total no se guarda: se calcula desde el detalle (RN.10).
++-- La dirección de entrega se copia como texto, para que no cambie si después el cliente
++-- modifica la suya (RN.04 y RN.29).
++-- Un pago aprobado exige la referencia de la transacción (CK_pedido_ref_transaccion).
++-- Los datos de envío se completan después del pago (RN.15), y cod_usuario es el empleado
++-- de depósito que despachó el pedido (RN.22); por eso aceptan NULL.
+ CREATE TABLE pedido
+ (
+   cod_pedido INT IDENTITY CONSTRAINT PK_pedido PRIMARY KEY,
+@@ -187,6 +223,8 @@ CREATE TABLE pedido
+   
+ );
+ GO
++-- Compras a proveedores (RN.07 y RN.20). Nacen pendientes y suben el stock recién al
++-- confirmarse (recibida). cod_usuario es el empleado de depósito que la registró (RN.13).
+ CREATE TABLE compra
+ (
+   cod_compra INT IDENTITY CONSTRAINT PK_compra PRIMARY KEY,
+@@ -201,6 +239,9 @@ CREATE TABLE compra
+   CONSTRAINT CK_compra_fecha CHECK (fecha <= GETDATE())
+ );
+ GO
++-- Registro de cambios sobre datos sensibles (RN.14), que completan los triggers de la Etapa V.
++-- cod_usuario es el empleado que informa la aplicación, y usuario_bd, el login de
++-- SQL Server que ejecutó la operación (se completa solo).
+ CREATE TABLE auditoria
+ (
+   cod_auditoria INT IDENTITY CONSTRAINT PK_auditoria PRIMARY KEY,
+@@ -216,6 +257,9 @@ CREATE TABLE auditoria
+   CONSTRAINT CK_auditoria_operacion CHECK (operacion IN ('INSERT', 'UPDATE', 'DELETE'))
+ );
+ GO
++-- Comprobante de venta (RN.17 y RN.21): una sola factura por pedido (UQ_factura_pedido)
++-- y número único por punto de venta. La condición de IVA y el documento del cliente se
++-- guardan en la factura y no en el cliente (RN.18). cod_usuario es quien la emitió.
+ CREATE TABLE factura
+ (
+   cod_factura INT IDENTITY CONSTRAINT PK_factura PRIMARY KEY,
+@@ -242,6 +286,9 @@ CREATE TABLE factura
+   CONSTRAINT UQ_factura_pedido UNIQUE (cod_pedido)
+ );
+ GO
++-- Renglones del pedido. Precio, alícuota e IVA se copian al vender y no cambian después
++-- (RN.03, RN.19 y RN.28). Un producto aparece una sola vez por pedido (clave compuesta).
++-- Si se borra el pedido, se borran sus renglones.
+ CREATE TABLE detalle_pedido
+ (
+   item INT NOT NULL,
+@@ -258,6 +305,7 @@ CREATE TABLE detalle_pedido
+   CONSTRAINT CK_detalle_pedido_precio CHECK (precio_unitario_venta > 0)
+ );
+ GO
++-- Renglones de la compra, con el costo unitario de ese momento (RN.08).
+ CREATE TABLE detalle_compra
+ (
+   costo_unitario DECIMAL(10,2) NOT NULL,
+@@ -271,6 +319,8 @@ CREATE TABLE detalle_compra
+   CONSTRAINT CK_detalle_compra_costo CHECK (costo_unitario > 0)
+ );
+ GO
++-- Promociones (RN.23). La fecha de fin no es anterior a la de inicio, y deben dar al menos
++-- un beneficio: descuento de hasta 75 % o cuotas sin interés (de 2 a 36).
+ CREATE TABLE promocion (
+     cod_promocion        INT IDENTITY(1,1) NOT NULL,
+     nombre               VARCHAR(100)      NOT NULL,
+@@ -290,6 +340,7 @@ CREATE TABLE promocion (
+         CHECK (porcentaje_descuento > 0 OR nro_cuotas > 1)
+ );
+ GO
++-- Productos de cada promoción (RN.24): relación de muchos a muchos.
+ CREATE TABLE promocion_producto (
+     cod_promocion INT NOT NULL,
+     cod_producto  INT NOT NULL,
+@@ -302,6 +353,7 @@ CREATE TABLE promocion_producto (
+         ON DELETE CASCADE ON UPDATE CASCADE
+ );
+ GO
++-- Banners de una promoción (RN.25), con una URL https única.
+ CREATE TABLE slide (
+     cod_slide     INT IDENTITY(1,1) NOT NULL,
+     url           VARCHAR(500)      NOT NULL,
+@@ -314,6 +366,7 @@ CREATE TABLE slide (
+         ON DELETE CASCADE ON UPDATE CASCADE
+ );
+ GO
++-- Imágenes y videos de un producto (RN.26), con una URL https única.
+ CREATE TABLE multimedia (
+     cod_multimedia INT IDENTITY(1,1) NOT NULL,
+     url            VARCHAR(500)      NOT NULL,
+@@ -328,6 +381,7 @@ CREATE TABLE multimedia (
+         ON DELETE CASCADE ON UPDATE CASCADE
+ );
+ GO
++-- Catálogo de especificaciones técnicas (RN.27), con nombre único.
+ CREATE TABLE especificacion (
+     cod_especificacion INT IDENTITY(1,1) NOT NULL,
+     nombre             VARCHAR(100)      NOT NULL,
+@@ -335,6 +389,7 @@ CREATE TABLE especificacion (
+     CONSTRAINT UQ_especificacion_nombre UNIQUE (nombre)
+ );
+ GO
++-- Valor de cada especificación para un producto (RN.27); no puede quedar vacío.
+ CREATE TABLE especificacion_producto (
+     cod_producto       INT          NOT NULL,
+     cod_especificacion INT          NOT NULL,
+diff --git a/sql/dml/cargar_datos.sql b/sql/dml/cargar_datos.sql
+index f8c1462..8897e19 100644
+--- a/sql/dml/cargar_datos.sql
++++ b/sql/dml/cargar_datos.sql
+@@ -4,6 +4,8 @@
+ -- Los códigos se cargan explícitos (IDENTITY_INSERT) para que las FK
+ -- sean predecibles. Guardado en UTF-8 con BOM (acentos).
+ -- Excepción: alicuota_iva tiene 6 registros, que son todas las
++-- Esperado: termina sin errores y la consulta final muestra la cantidad
++-- de filas de cada una de las 22 tablas (el detalle está al final).
+ -- alícuotas vigentes en Argentina.
+ -- =============================================================
+ USE smarthome_store;
+@@ -11,6 +13,7 @@ GO
+ SET QUOTED_IDENTIFIER ON; -- lo exigen los indices filtrados de direccion
+ GO
+ 
++-- 24 provincias: las 23 provincias y la Ciudad Autónoma de Buenos Aires.
+ SET IDENTITY_INSERT provincia ON;
+ INSERT INTO provincia (cod_provincia, nombre) VALUES
+ (1, 'BUENOS AIRES'),
+@@ -40,6 +43,7 @@ INSERT INTO provincia (cod_provincia, nombre) VALUES
+ SET IDENTITY_INSERT provincia OFF;
+ GO
+ 
++-- 11 localidades, las de los clientes y proveedores.
+ SET IDENTITY_INSERT localidad ON;
+ INSERT INTO localidad (cod_localidad, nombre, cod_provincia) VALUES
+ (1, 'Corrientes', 7),
+@@ -56,6 +60,7 @@ INSERT INTO localidad (cod_localidad, nombre, cod_provincia) VALUES
+ SET IDENTITY_INSERT localidad OFF;
+ GO
+ 
++-- 10 clientes. Las contraseñas son hashes de prueba.
+ SET IDENTITY_INSERT cliente ON;
+ INSERT INTO cliente (cod_cliente, nombre, apellido, email, contrasena_hash, fecha_registro, telefono) VALUES
+ (1, 'Lucía', 'Gómez', 'lucia.gomez@gmail.com', '$2b$12$luciagomezluciagomezluhashDePrueba0000000000000', '2026-03-10', '3794123456'),
+@@ -71,6 +76,8 @@ INSERT INTO cliente (cod_cliente, nombre, apellido, email, contrasena_hash, fech
+ SET IDENTITY_INSERT cliente OFF;
+ GO
+ 
++-- 10 usuarios internos: 3 administradores, 4 de depósito y 3 de soporte.
++-- Los triggers de auditoría usan al usuario 1 (mgonzalez) si la aplicación no informa otro.
+ SET IDENTITY_INSERT usuario ON;
+ INSERT INTO usuario (cod_usuario, nombre_usuario, contrasena_hash, rol) VALUES
+ (1, 'mgonzalez', '$2b$12$mgonzalezmgonzalezmgonhashDePrueba0000000000000', 'ADMINISTRADOR'),
+@@ -86,6 +93,7 @@ INSERT INTO usuario (cod_usuario, nombre_usuario, contrasena_hash, rol) VALUES
+ SET IDENTITY_INSERT usuario OFF;
+ GO
+ 
++-- 5 categorías principales (sin categoría padre).
+ SET IDENTITY_INSERT categoria ON;
+ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
+ (1, 'Electrónica', NULL),
+@@ -96,6 +104,7 @@ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
+ SET IDENTITY_INSERT categoria OFF;
+ GO
+ 
++-- 5 subcategorías. Se cargan después porque referencian a su categoría padre.
+ SET IDENTITY_INSERT categoria ON;
+ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
+ (6, 'Televisores', 1),
+@@ -106,6 +115,7 @@ INSERT INTO categoria (cod_categoria, nombre, cod_categoria_padre) VALUES
+ SET IDENTITY_INSERT categoria OFF;
+ GO
+ 
++-- 6 alícuotas de IVA, con el código que les asigna ARCA (ver la excepción del encabezado).
+ INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
+ (3, 'Cero', 0.00),
+ (9, 'Mínima', 2.50),
+@@ -115,6 +125,7 @@ INSERT INTO alicuota_iva (cod_alicuota, nombre, porcentaje) VALUES
+ (6, 'Incrementada', 27.00);
+ GO
+ 
++-- 10 productos con precio neto (sin IVA) y stock inicial.
+ SET IDENTITY_INSERT producto ON;
+ INSERT INTO producto (cod_producto, nombre, descripcion, precio_lista, cod_alicuota, stock, cod_categoria) VALUES
+ (1, 'Smart TV 50"', 'Televisor LED 4K UHD de 50 pulgadas con sistema Smart, WiFi y Bluetooth.', 289256.20, 5, 12, 6),
+@@ -130,6 +141,7 @@ INSERT INTO producto (cod_producto, nombre, descripcion, precio_lista, cod_alicu
+ SET IDENTITY_INSERT producto OFF;
+ GO
+ 
++-- 10 proveedores.
+ SET IDENTITY_INSERT proveedor ON;
+ INSERT INTO proveedor (cod_proveedor, razon_social, nombre, email, cuit) VALUES
+ (1, 'Distribuidora Litoral S.A.', 'Distribuidora Litoral', 'ventas@distribuidoralitoral.example', '30-71234567-8'),
+@@ -145,6 +157,8 @@ INSERT INTO proveedor (cod_proveedor, razon_social, nombre, email, cuit) VALUES
+ SET IDENTITY_INSERT proveedor OFF;
+ GO
+ 
++-- 22 direcciones: una principal por cliente (1 a 10) y por proveedor (11 a 20), y dos
++-- secundarias, la 21 del cliente 1 y la 22 del proveedor 3.
+ SET IDENTITY_INSERT direccion ON;
+ INSERT INTO direccion (cod_direccion, calle, numero, cod_postal, principal, cod_localidad, cod_cliente, cod_proveedor) VALUES
+ (1, 'Junín', '1234', '3400', 1, 1, 1, NULL),
+@@ -172,6 +186,7 @@ INSERT INTO direccion (cod_direccion, calle, numero, cod_postal, principal, cod_
+ SET IDENTITY_INSERT direccion OFF;
+ GO
+ 
++-- 10 métodos de pago.
+ SET IDENTITY_INSERT metodo_pago ON;
+ INSERT INTO metodo_pago (cod_metodo_pago, nombre) VALUES
+ (1, 'Tarjeta de crédito'),
+@@ -187,6 +202,9 @@ INSERT INTO metodo_pago (cod_metodo_pago, nombre) VALUES
+ SET IDENTITY_INSERT metodo_pago OFF;
+ GO
+ 
++-- 12 pedidos en distintos estados, para las pruebas: 10 confirmados y pagados
++-- (7 entregados, el 8 despachado, y el 9 y el 12 sin despachar), el 10 pendiente
++-- y el 11 cancelado. La dirección de entrega es una copia de la del cliente.
+ SET IDENTITY_INSERT pedido ON;
+ INSERT INTO pedido (cod_pedido, fecha_pedido, estado, estado_pago, ref_transaccion, calle, numero, ciudad, provincia, cod_postal, estado_envio, fecha_envio, transportista, fecha_entrega, nro_seguimiento, cod_cliente, cod_metodo_pago, cod_usuario) VALUES
+ (1, '2026-05-12T10:15:00', 'confirmado', 'aprobado', 'MP-88120451', 'Junín', '1234', 'Corrientes', 'CORRIENTES', '3400', 'entregado', '2026-05-13T09:00:00', 'Andreani', '2026-05-16', 'AND-000451201', 1, 3, 3),
+@@ -204,6 +222,8 @@ INSERT INTO pedido (cod_pedido, fecha_pedido, estado, estado_pago, ref_transacci
+ SET IDENTITY_INSERT pedido OFF;
+ GO
+ 
++-- 10 compras: 8 recibidas, la 9 pendiente (la usan las pruebas de usp_confirmar_compra
++-- en la Etapa V) y la 10 cancelada.
+ SET IDENTITY_INSERT compra ON;
+ INSERT INTO compra (cod_compra, fecha, estado, nro_comprobante_prov, cod_proveedor, cod_usuario) VALUES
+ (1, '2026-03-02T09:00:00', 'recibida', '0001-00012345', 3, 3),
+@@ -219,6 +239,8 @@ INSERT INTO compra (cod_compra, fecha, estado, nro_comprobante_prov, cod_proveed
+ SET IDENTITY_INSERT compra OFF;
+ GO
+ 
++-- 10 registros de auditoría de ejemplo. usuario_bd no se indica: toma el login
++-- de quien ejecuta este script.
+ SET IDENTITY_INSERT auditoria ON;
+ INSERT INTO auditoria (cod_auditoria, entidad, operacion, registro_id, fecha, valor_anterior, valor_nuevo, cod_usuario) VALUES
+ (1, 'producto', 'UPDATE', 1, '2026-04-05T10:00:00', 'precio_lista=275000.00', 'precio_lista=289256.20', 1),
+@@ -234,6 +256,7 @@ INSERT INTO auditoria (cod_auditoria, entidad, operacion, registro_id, fecha, va
+ SET IDENTITY_INSERT auditoria OFF;
+ GO
+ 
++-- 10 facturas, una por cada pedido confirmado y pagado (RN.17): pedidos 1 a 9 y 12.
+ SET IDENTITY_INSERT factura ON;
+ INSERT INTO factura (cod_factura, tipo_comprobante, numero, fecha_emision, cond_iva_cliente, subtotal, iva_total, total, cae, fecha_vto_cae, tipo_documento_cliente, nro_documento_cliente, razon_social, punto_venta, cod_pedido, cod_usuario) VALUES
+ (1, 'B', 1, '2026-05-12', 'Consumidor Final', 202479.34, 42520.66, 245000.00, '75432100000013', '2026-05-22', 'DNI', '38456123', NULL, 1, 1, 1),
+@@ -249,6 +272,7 @@ INSERT INTO factura (cod_factura, tipo_comprobante, numero, fecha_emision, cond_
+ SET IDENTITY_INSERT factura OFF;
+ GO
+ 
++-- 17 renglones de compra, con el costo unitario de cada una (RN.08).
+ INSERT INTO detalle_compra (cod_compra, cod_producto, cantidad, costo_unitario) VALUES
+ (1, 1, 10, 210000.00),
+ (1, 6, 15, 300000.00),
+@@ -269,6 +293,8 @@ INSERT INTO detalle_compra (cod_compra, cod_producto, cantidad, costo_unitario)
+ (10, 8, 3, 385000.00);
+ GO
+ 
++-- 18 renglones de pedido. El precio ya incluye el IVA y el descuento de la promoción
++-- vigente: es el precio que quedó congelado al vender (RN.03 y RN.19).
+ INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_unitario_venta, alicuota_iva, iva_monto) VALUES
+ (1, 1, 1, 1, 245000.00, 21.00, 42520.66),  -- descuento 30.00 % por promoción
+ (2, 2, 1, 2, 21250.00, 21.00, 7376.03),  -- descuento 15.00 % por promoción
+@@ -290,6 +316,7 @@ INSERT INTO detalle_pedido (cod_pedido, cod_producto, item, cantidad, precio_uni
+ (12, 4, 2, 1, 5200.00, 21.00, 902.48);  -- descuento 35.00 % por promoción
+ GO
+ 
++-- 10 promociones.
+ SET IDENTITY_INSERT promocion ON;
+ INSERT INTO promocion (cod_promocion, nombre, descripcion, fecha_inicio, fecha_fin, porcentaje_descuento, nro_cuotas) VALUES
+ (1, 'Hot Sale 2026', 'Descuentos exclusivos en tecnología durante el Hot Sale.', '2026-05-11T00:00:00', '2026-05-13T23:59:59', 30.00, 1),
+@@ -305,6 +332,7 @@ INSERT INTO promocion (cod_promocion, nombre, descripcion, fecha_inicio, fecha_f
+ SET IDENTITY_INSERT promocion OFF;
+ GO
+ 
++-- 16 asignaciones de productos a promociones.
+ INSERT INTO promocion_producto (cod_promocion, cod_producto) VALUES
+ (1, 1),
+ (1, 6),
+@@ -324,6 +352,7 @@ INSERT INTO promocion_producto (cod_promocion, cod_producto) VALUES
+ (10, 7);
+ GO
+ 
++-- 10 slides (banners).
+ SET IDENTITY_INSERT slide ON;
+ INSERT INTO slide (cod_slide, url, cod_promocion) VALUES
+ (1, 'https://cdn.smarthomestore.com.ar/slides/hot-sale-2026.webp', 1),
+@@ -339,6 +368,7 @@ INSERT INTO slide (cod_slide, url, cod_promocion) VALUES
+ SET IDENTITY_INSERT slide OFF;
+ GO
+ 
++-- 12 archivos multimedia (imágenes y videos).
+ SET IDENTITY_INSERT multimedia ON;
+ INSERT INTO multimedia (cod_multimedia, url, tipo, cod_producto) VALUES
+ (1, 'https://cdn.smarthomestore.com.ar/productos/1/frente.jpg', 'imagen', 1),
+@@ -356,6 +386,7 @@ INSERT INTO multimedia (cod_multimedia, url, tipo, cod_producto) VALUES
+ SET IDENTITY_INSERT multimedia OFF;
+ GO
+ 
++-- 10 especificaciones técnicas.
+ SET IDENTITY_INSERT especificacion ON;
+ INSERT INTO especificacion (cod_especificacion, nombre) VALUES
+ (1, 'Tamaño de pantalla'),
+@@ -371,6 +402,7 @@ INSERT INTO especificacion (cod_especificacion, nombre) VALUES
+ SET IDENTITY_INSERT especificacion OFF;
+ GO
+ 
++-- 16 valores de especificaciones de productos.
+ INSERT INTO especificacion_producto (cod_producto, cod_especificacion, valor) VALUES
+ (1, 1, '50 pulgadas'),
+ (1, 2, '4K UHD (3840 x 2160)'),
+@@ -390,6 +422,12 @@ INSERT INTO especificacion_producto (cod_producto, cod_especificacion, valor) VA
+ (10, 9, '12 meses');
+ GO
+ 
++-- Control: cantidad de filas por tabla.
++-- Esperado: provincia 24, localidad 11, direccion 22, alicuota_iva 6, categoria 10,
++-- usuario 10, cliente 10, proveedor 10, metodo_pago 10, producto 10, compra 10,
++-- detalle_compra 17, pedido 12, detalle_pedido 18, factura 10, auditoria 10,
++-- promocion 10, promocion_producto 16, slide 10, multimedia 12, especificacion 10
++-- y especificacion_producto 16.
+ SELECT 'provincia' AS tabla, COUNT(*) AS registros FROM provincia
+ UNION ALL SELECT 'localidad', COUNT(*) FROM localidad
+ UNION ALL SELECT 'direccion', COUNT(*) FROM direccion
+diff --git a/sql/tecnico/indices/02_pruebas_indices.sql b/sql/tecnico/indices/02_pruebas_indices.sql
+index 160d0bf..e91d186 100644
+--- a/sql/tecnico/indices/02_pruebas_indices.sql
++++ b/sql/tecnico/indices/02_pruebas_indices.sql
+@@ -18,6 +18,7 @@ SET STATISTICS IO, TIME ON;
+ GO
+ 
+ -- === ESCENARIO 1: sin índice
++-- Esperado: Table Scan, 14.158 filas y 25.642 lecturas lógicas en las dos corridas.
+ -- Se quitan los índices de una ejecución anterior, para que el script se pueda repetir.
+ DROP INDEX IF EXISTS IX_venta_historica_fecha_cubre ON dbo.venta_historica;
+ DROP INDEX IF EXISTS IX_venta_historica_fecha ON dbo.venta_historica;
+@@ -31,6 +32,7 @@ SELECT cod_venta, fecha_venta, importe FROM dbo.venta_historica WHERE fecha_vent
+ GO
+ 
+ -- === ESCENARIO 2: índice agrupado sobre fecha_venta
++-- Esperado: Clustered Index Seek, 14.158 filas y 367 lecturas lógicas.
+ CREATE CLUSTERED INDEX IX_venta_historica_fecha ON dbo.venta_historica (fecha_venta);
+ GO
+ CHECKPOINT;
+@@ -44,6 +46,7 @@ GO
+ -- === ESCENARIO 3: índice no agrupado que incluye las columnas seleccionadas
+ -- SQL Server no admite INCLUDE en un índice agrupado, porque ese índice
+ -- ya contiene todas las columnas de la tabla.
++-- Esperado: Index Seek, 14.158 filas y 67 lecturas lógicas.
+ DROP INDEX IX_venta_historica_fecha ON dbo.venta_historica;
+ GO
+ CREATE NONCLUSTERED INDEX IX_venta_historica_fecha_cubre ON dbo.venta_historica (fecha_venta) INCLUDE (cod_venta, importe);
+@@ -59,6 +62,7 @@ GO
+ SET STATISTICS IO, TIME OFF;
+ GO
+ 
++-- Los tiempos varían entre equipos y corridas; las lecturas lógicas no.
+ -- Tamaño de la tabla y del índice que queda
+ SELECT i.name AS indice, i.type_desc AS tipo, SUM(s.used_page_count) AS paginas,
+        SUM(s.used_page_count) * 8 / 1024 AS mb
